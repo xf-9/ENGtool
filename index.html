@@ -57,6 +57,36 @@
     <script type="text/babel">
         const { useState, useEffect, useCallback } = React;
 
+        // Configuration for GitHub repository
+        const GITHUB_CONFIG = {
+            owner: '', // Will be auto-detected from current URL
+            repo: '', // Will be auto-detected from current URL
+            dataFolder: 'data',
+            defaultFile: 'words_default.md'
+        };
+
+        // Auto-detect GitHub repository info from current URL
+        const initGitHubConfig = () => {
+            const hostname = window.location.hostname;
+            if (hostname.endsWith('.github.io')) {
+                const pathParts = window.location.pathname.split('/').filter(p => p);
+                if (hostname === 'username.github.io' && pathParts.length > 0) {
+                    // Custom domain like username.github.io/repo-name
+                    GITHUB_CONFIG.owner = hostname.split('.')[0];
+                    GITHUB_CONFIG.repo = pathParts[0];
+                } else {
+                    // Standard GitHub Pages like username.github.io
+                    GITHUB_CONFIG.owner = hostname.split('.')[0];
+                    GITHUB_CONFIG.repo = pathParts[0] || GITHUB_CONFIG.owner + '.github.io';
+                }
+            }
+            // For local development, you might want to set these manually
+            console.log('GitHub Config:', GITHUB_CONFIG);
+        };
+
+        // Initialize GitHub config
+        initGitHubConfig();
+
         // 工具函数
         const speak = (text, rate = 0.95, lang = 'en-US') => {
             if ('speechSynthesis' in window) {
@@ -127,6 +157,80 @@
                 defs: row.defs || '',
                 ex: row.ex || ''
             })).filter(item => item.word && item.pos && item.cn);
+        };
+
+        // GitHub file fetching utilities
+        const fetchFromGitHub = async (filePath) => {
+            const timestamp = new Date().getTime();
+            const baseUrl = `https://raw.githubusercontent.com/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/main`;
+            const url = `${baseUrl}/${filePath}?t=${timestamp}`;
+            
+            try {
+                const response = await fetch(url, { 
+                    cache: 'no-store',
+                    headers: {
+                        'Cache-Control': 'no-cache, no-store, must-revalidate',
+                        'Pragma': 'no-cache',
+                        'Expires': '0'
+                    }
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                if (filePath.endsWith('.xlsx') || filePath.endsWith('.xls')) {
+                    const arrayBuffer = await response.arrayBuffer();
+                    return { type: 'excel', data: arrayBuffer };
+                } else {
+                    const text = await response.text();
+                    return { type: 'text', data: text };
+                }
+            } catch (error) {
+                console.error('Failed to fetch from GitHub:', error);
+                throw error;
+            }
+        };
+
+        const parseGitHubFile = (fileResult, fileName) => {
+            try {
+                if (fileResult.type === 'excel') {
+                    const workbook = XLSX.read(fileResult.data, { type: 'array' });
+                    return parseExcel(workbook);
+                } else if (fileName.endsWith('.md')) {
+                    return parseMarkdown(fileResult.data);
+                } else {
+                    throw new Error('Unsupported file type');
+                }
+            } catch (error) {
+                console.error('Failed to parse GitHub file:', error);
+                throw error;
+            }
+        };
+
+        // Get available vocabulary files from GitHub
+        const getAvailableFiles = async () => {
+            try {
+                const timestamp = new Date().getTime();
+                const apiUrl = `https://api.github.com/repos/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/contents/${GITHUB_CONFIG.dataFolder}?t=${timestamp}`;
+                
+                const response = await fetch(apiUrl, { cache: 'no-store' });
+                if (!response.ok) {
+                    throw new Error(`GitHub API error: ${response.status}`);
+                }
+                
+                const files = await response.json();
+                return files
+                    .filter(file => file.type === 'file' && (file.name.endsWith('.md') || file.name.endsWith('.xlsx') || file.name.endsWith('.xls')))
+                    .map(file => ({
+                        name: file.name,
+                        path: `${GITHUB_CONFIG.dataFolder}/${file.name}`,
+                        displayName: file.name.replace(/\.(md|xlsx|xls)$/, '')
+                    }));
+            } catch (error) {
+                console.warn('Failed to get available files from GitHub:', error);
+                return [];
+            }
         };
 
         // 默认词库
@@ -241,7 +345,6 @@
                     )}
 
                     <div className="flex justify-center mb-8">
-                        {/* 修改卡片布局，去掉滚动，一次性显示全部内容 */}
                         <div className={`card-flip max-w-[900px] w-[min(95vw,900px)] min-h-[600px] ${isFlipped ? 'flipped' : ''}`}>
                             <div className="card-inner">
                                 {/* 正面 */}
@@ -252,7 +355,7 @@
                                     <p className="text-base text-gray-400 mt-6">点击翻转</p>
                                 </div>
 
-                                {/* 背面 - 使用更紧凑的布局，一次性显示全部 */}
+                                {/* 背面 */}
                                 <div className="card-back bg-blue-50 border-2 border-blue-300 rounded-lg p-6 cursor-pointer shadow-lg flex flex-col justify-between"
                                      onClick={handleFlip}>
                                     
@@ -325,7 +428,7 @@
             );
         };
 
-        // 选择题组件 - 修复困难模式bug
+        // 选择题组件
         const Quiz = ({ words, mode, onBack, targetWord = null, autoSpeak }) => {
             const [currentIndex, setCurrentIndex] = useState(0);
             const [score, setScore] = useState(0);
@@ -340,16 +443,13 @@
                 
                 let options = [correctAnswer];
                 
-                // 修复困难模式逻辑
                 const otherWords = allWords.filter(w => w !== word);
                 const optionCount = isHard ? 4 : 2;
                 
                 if (isHard) {
-                    // 困难模式：优先选择同词性的干扰项
                     const samePos = otherWords.filter(w => w.pos === word.pos);
                     const differentPos = otherWords.filter(w => w.pos !== word.pos);
                     
-                    // 先添加同词性的选项
                     const shuffledSamePos = shuffle(samePos);
                     for (let i = 0; i < Math.min(3, shuffledSamePos.length); i++) {
                         const w = shuffledSamePos[i];
@@ -359,7 +459,6 @@
                         }
                     }
                     
-                    // 如果还不够，添加不同词性的选项
                     const shuffledDifferentPos = shuffle(differentPos);
                     for (let i = 0; i < shuffledDifferentPos.length && options.length < 5; i++) {
                         const w = shuffledDifferentPos[i];
@@ -369,7 +468,6 @@
                         }
                     }
                 } else {
-                    // 普通模式：随机选择干扰项
                     const shuffledOthers = shuffle(otherWords);
                     for (let i = 0; i < Math.min(optionCount, shuffledOthers.length); i++) {
                         const w = shuffledOthers[i];
@@ -380,7 +478,6 @@
                     }
                 }
                 
-                // 确保有足够的选项
                 while (options.length < (isHard ? 5 : 3) && options.length < allWords.length) {
                     const randomWord = otherWords[Math.floor(Math.random() * otherWords.length)];
                     const randomOption = isChinese ? `${randomWord.word} (${randomWord.pos})` : randomWord.cn;
@@ -407,11 +504,9 @@
                 }
 
                 if (targetWord) {
-                    // 单词测试模式
                     const question = generateQuestion(targetWord, words, mode === 'hard');
                     setQuestions([question]);
                 } else {
-                    // 正常闯关模式
                     const shuffledWords = shuffle([...words]);
                     const newQuestions = shuffledWords.map(word => 
                         generateQuestion(word, words, mode === 'hard')
@@ -446,7 +541,6 @@
 
             const nextQuestion = () => {
                 if (targetWord) {
-                    // 单词测试完成，返回卡片模式
                     onBack();
                     return;
                 }
@@ -456,7 +550,6 @@
                     setAnswered(false);
                     setSelectedAnswer(null);
                 } else {
-                    // 闯关完成
                     alert(`闯关完成！最终得分: ${score}/${questions.length * (mode === 'hard' ? 2 : 1)}`);
                     onBack();
                 }
@@ -562,11 +655,120 @@
             const [showWordList, setShowWordList] = useState(false);
             const [targetWord, setTargetWord] = useState(null);
             const [currentWordbank, setCurrentWordbank] = useState('default');
+            const [availableFiles, setAvailableFiles] = useState([]);
+            const [selectedGitHubFile, setSelectedGitHubFile] = useState('');
+            const [loadingFromGitHub, setLoadingFromGitHub] = useState(false);
+
+            // 从URL参数加载词库
+            const loadFromUrlParam = useCallback(async () => {
+                const urlParams = new URLSearchParams(window.location.search);
+                const srcParam = urlParams.get('src');
+                
+                if (srcParam && GITHUB_CONFIG.owner && GITHUB_CONFIG.repo) {
+                    try {
+                        setLoadingFromGitHub(true);
+                        const fileResult = await fetchFromGitHub(srcParam);
+                        const parsedWords = parseGitHubFile(fileResult, srcParam);
+                        
+                        if (parsedWords.length > 0) {
+                            setWords(parsedWords);
+                            setCurrentWordbank('github');
+                            setSelectedGitHubFile(srcParam);
+                            console.log(`Loaded ${parsedWords.length} words from URL parameter: ${srcParam}`);
+                        }
+                    } catch (error) {
+                        console.error('Failed to load from URL parameter:', error);
+                        alert(`无法从URL参数加载词库: ${srcParam}`);
+                    } finally {
+                        setLoadingFromGitHub(false);
+                    }
+                }
+            }, []);
+
+            // 加载默认GitHub词库
+            const loadDefaultGitHubWordbank = useCallback(async () => {
+                if (!GITHUB_CONFIG.owner || !GITHUB_CONFIG.repo) {
+                    console.log('GitHub config not available, using built-in default words');
+                    return;
+                }
+
+                try {
+                    const defaultPath = `${GITHUB_CONFIG.dataFolder}/${GITHUB_CONFIG.defaultFile}`;
+                    const fileResult = await fetchFromGitHub(defaultPath);
+                    const parsedWords = parseGitHubFile(fileResult, GITHUB_CONFIG.defaultFile);
+                    
+                    if (parsedWords.length > 0) {
+                        setWords(parsedWords);
+                        setCurrentWordbank('github');
+                        setSelectedGitHubFile(defaultPath);
+                        console.log(`Loaded ${parsedWords.length} words from default GitHub file`);
+                    } else {
+                        throw new Error('No words found in default file');
+                    }
+                } catch (error) {
+                    console.warn('Failed to load default GitHub wordbank, using built-in defaults:', error);
+                    setWords(defaultWords);
+                    setCurrentWordbank('default');
+                }
+            }, []);
 
             // 初始化设置和数据
             useEffect(() => {
-                setWords(defaultWords);
-            }, []);
+                const init = async () => {
+                    // First check URL parameters
+                    const urlParams = new URLSearchParams(window.location.search);
+                    const srcParam = urlParams.get('src');
+                    
+                    if (srcParam) {
+                        await loadFromUrlParam();
+                    } else if (GITHUB_CONFIG.owner && GITHUB_CONFIG.repo) {
+                        // Try to load default from GitHub
+                        await loadDefaultGitHubWordbank();
+                    } else {
+                        // Use built-in default words
+                        setWords(defaultWords);
+                        setCurrentWordbank('default');
+                    }
+
+                    // Load available files list
+                    if (GITHUB_CONFIG.owner && GITHUB_CONFIG.repo) {
+                        try {
+                            const files = await getAvailableFiles();
+                            setAvailableFiles(files);
+                        } catch (error) {
+                            console.warn('Failed to load available files list:', error);
+                        }
+                    }
+                };
+
+                init();
+            }, [loadFromUrlParam, loadDefaultGitHubWordbank]);
+
+            // 处理GitHub文件选择
+            const handleGitHubFileChange = async (filePath) => {
+                if (!filePath) return;
+                
+                try {
+                    setLoadingFromGitHub(true);
+                    const fileResult = await fetchFromGitHub(filePath);
+                    const fileName = filePath.split('/').pop();
+                    const parsedWords = parseGitHubFile(fileResult, fileName);
+                    
+                    if (parsedWords.length > 0) {
+                        setWords(parsedWords);
+                        setCurrentWordbank('github');
+                        setSelectedGitHubFile(filePath);
+                        alert(`成功加载 ${parsedWords.length} 个单词！`);
+                    } else {
+                        alert('文件中没有找到有效的单词数据！');
+                    }
+                } catch (error) {
+                    console.error('Failed to load GitHub file:', error);
+                    alert(`加载失败: ${error.message}`);
+                } finally {
+                    setLoadingFromGitHub(false);
+                }
+            };
 
             const handleImportFile = (event) => {
                 const file = event.target.files[0];
@@ -587,6 +789,7 @@
                         if (importedWords.length > 0) {
                             setWords(importedWords);
                             setCurrentWordbank('custom');
+                            setSelectedGitHubFile('');
                             alert(`成功导入 ${importedWords.length} 个单词！`);
                         } else {
                             alert('文件格式不正确或没有找到有效的单词数据！');
@@ -605,10 +808,17 @@
                 event.target.value = '';
             };
 
-            const switchWordbank = (bankType) => {
+            const switchWordbank = async (bankType) => {
                 if (bankType === 'default') {
                     setWords(defaultWords);
                     setCurrentWordbank('default');
+                    setSelectedGitHubFile('');
+                } else if (bankType === 'github') {
+                    if (GITHUB_CONFIG.owner && GITHUB_CONFIG.repo) {
+                        await loadDefaultGitHubWordbank();
+                    } else {
+                        alert('GitHub配置不可用，请检查部署环境！');
+                    }
                 } else if (bankType === 'custom') {
                     alert('请先导入自定义词库文件！');
                 }
@@ -618,6 +828,7 @@
                 if (window.confirm('确定要清空导入的词库吗？此操作不可恢复。')) {
                     setWords(defaultWords);
                     setCurrentWordbank('default');
+                    setSelectedGitHubFile('');
                     alert('已清空导入词库并切回默认词库');
                 }
             };
@@ -702,9 +913,17 @@
                             <div className="space-y-6">
                                 <div>
                                     <p className="mb-4 text-lg">当前词库: <span className="font-semibold">
-                                        {currentWordbank === 'default' ? '默认词库' : '导入词库'}
+                                        {currentWordbank === 'default' ? '内置默认词库' : 
+                                         currentWordbank === 'github' ? 'GitHub词库' : '本地导入词库'}
                                     </span> ({words.length} 个单词)</p>
-                                    <div className="flex flex-wrap gap-3">
+                                    
+                                    {currentWordbank === 'github' && selectedGitHubFile && (
+                                        <p className="mb-4 text-sm text-gray-600">
+                                            文件: {selectedGitHubFile}
+                                        </p>
+                                    )}
+                                    
+                                    <div className="flex flex-wrap gap-3 mb-4">
                                         <button
                                             onClick={() => switchWordbank('default')}
                                             className={`px-6 py-3 text-lg rounded ${
@@ -713,8 +932,23 @@
                                                     : 'bg-gray-200 hover:bg-gray-300'
                                             }`}
                                         >
-                                            切换到默认词库
+                                            切换到内置词库
                                         </button>
+                                        
+                                        {GITHUB_CONFIG.owner && GITHUB_CONFIG.repo && (
+                                            <button
+                                                onClick={() => switchWordbank('github')}
+                                                disabled={loadingFromGitHub}
+                                                className={`px-6 py-3 text-lg rounded ${
+                                                    currentWordbank === 'github'
+                                                        ? 'bg-blue-500 text-white'
+                                                        : 'bg-gray-200 hover:bg-gray-300'
+                                                } ${loadingFromGitHub ? 'opacity-50' : ''}`}
+                                            >
+                                                {loadingFromGitHub ? '加载中...' : '切换到GitHub词库'}
+                                            </button>
+                                        )}
+                                        
                                         <button
                                             onClick={() => switchWordbank('custom')}
                                             className={`px-6 py-3 text-lg rounded ${
@@ -723,18 +957,44 @@
                                                     : 'bg-gray-200 hover:bg-gray-300'
                                             }`}
                                         >
-                                            切换到导入词库
+                                            切换到本地导入
                                         </button>
+                                        
                                         <button
                                             onClick={clearCustomWordbank}
                                             className="px-6 py-3 text-lg bg-red-500 text-white rounded hover:bg-red-600"
                                         >
-                                            清空导入词库
+                                            重置词库
                                         </button>
                                     </div>
                                 </div>
+
+                                {/* GitHub文件选择器 */}
+                                {GITHUB_CONFIG.owner && GITHUB_CONFIG.repo && availableFiles.length > 0 && (
+                                    <div>
+                                        <label className="block mb-3 text-lg font-medium">从GitHub仓库加载词库:</label>
+                                        <select
+                                            value={selectedGitHubFile}
+                                            onChange={(e) => handleGitHubFileChange(e.target.value)}
+                                            disabled={loadingFromGitHub}
+                                            className="block w-full p-3 text-base border border-gray-300 rounded bg-white"
+                                        >
+                                            <option value="">-- 选择词库文件 --</option>
+                                            {availableFiles.map(file => (
+                                                <option key={file.path} value={file.path}>
+                                                    {file.displayName} ({file.name})
+                                                </option>
+                                            ))}
+                                        </select>
+                                        {loadingFromGitHub && (
+                                            <p className="mt-2 text-sm text-blue-600">正在从GitHub加载...</p>
+                                        )}
+                                    </div>
+                                )}
+
+                                {/* 本地文件导入 */}
                                 <div>
-                                    <label className="block mb-3 text-lg font-medium">导入词库文件 (.md / .xlsx):</label>
+                                    <label className="block mb-3 text-lg font-medium">导入本地词库文件 (.md / .xlsx):</label>
                                     <input
                                         type="file"
                                         accept=".md,.xlsx,.xls"
@@ -810,11 +1070,15 @@
                                 <p><strong>普通模式：</strong>3选1，答对+1分，答错不扣分</p>
                                 <p><strong>困难模式：</strong>5选1，随机中英文题干，同词性干扰项，答对+2分，答错-2分</p>
                                 <p><strong>字体优化：</strong>所有文字都已优化为更大的字体，支持响应式设计，在不同设备上都有良好的可读性</p>
+                                <p><strong>GitHub集成：</strong>支持从GitHub仓库自动加载词库文件，支持URL参数直接加载指定文件</p>
                                 <p><strong>文件格式：</strong></p>
                                 <p>• Markdown: ## word: 单词名 → pos: 词性 → cn: 中文 → defs: 搭配 → ex: 例句</p>
                                 <p>• Excel: 包含word、pos、cn、defs、ex列，多个例句/搭配用分号分隔</p>
                                 <p>• 例句支持英中对照格式：英文|中文；英文|中文；英文|中文</p>
-                                <p><strong>修复更新：</strong>修复了困难模式无限加载的bug，优化了卡片布局，去掉滚动条，一次性显示全部内容</p>
+                                <p><strong>URL参数：</strong>可使用 ?src=data/filename.md 直接加载指定词库文件</p>
+                                {GITHUB_CONFIG.owner && GITHUB_CONFIG.repo && (
+                                    <p><strong>当前仓库：</strong> {GITHUB_CONFIG.owner}/{GITHUB_CONFIG.repo}</p>
+                                )}
                             </div>
                         </div>
                     </div>
