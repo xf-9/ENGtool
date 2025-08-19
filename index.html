@@ -59,8 +59,8 @@
 
         // Configuration for GitHub repository
         const GITHUB_CONFIG = {
-            owner: '', // Will be auto-detected from current URL
-            repo: '', // Will be auto-detected from current URL
+            owner: 'xf-9', // Set your GitHub username here
+            repo: 'ENGtool', // Set your repository name here
             dataFolder: 'data',
             defaultFile: 'words_default.md'
         };
@@ -68,20 +68,31 @@
         // Auto-detect GitHub repository info from current URL
         const initGitHubConfig = () => {
             const hostname = window.location.hostname;
+            const pathname = window.location.pathname;
+            const pathParts = pathname.split('/').filter(p => p);
+            
+            console.log('Current URL info:', { hostname, pathname, pathParts });
+            
             if (hostname.endsWith('.github.io')) {
-                const pathParts = window.location.pathname.split('/').filter(p => p);
-                if (hostname === 'username.github.io' && pathParts.length > 0) {
-                    // Custom domain like username.github.io/repo-name
-                    GITHUB_CONFIG.owner = hostname.split('.')[0];
+                const ownerPart = hostname.replace('.github.io', '');
+                
+                if (pathParts.length > 0) {
+                    // Project pages like username.github.io/repo-name
+                    GITHUB_CONFIG.owner = ownerPart;
                     GITHUB_CONFIG.repo = pathParts[0];
                 } else {
-                    // Standard GitHub Pages like username.github.io
-                    GITHUB_CONFIG.owner = hostname.split('.')[0];
-                    GITHUB_CONFIG.repo = pathParts[0] || GITHUB_CONFIG.owner + '.github.io';
+                    // User/org pages like username.github.io
+                    GITHUB_CONFIG.owner = ownerPart;
+                    GITHUB_CONFIG.repo = ownerPart + '.github.io';
                 }
+            } else {
+                // For local development or custom domains, set manually
+                // You can uncomment and modify these for testing:
+                // GITHUB_CONFIG.owner = 'xf-9';
+                // GITHUB_CONFIG.repo = 'ENGtool';
             }
-            // For local development, you might want to set these manually
-            console.log('GitHub Config:', GITHUB_CONFIG);
+            
+            console.log('GitHub Config detected:', GITHUB_CONFIG);
         };
 
         // Initialize GitHub config
@@ -165,6 +176,9 @@
             const baseUrl = `https://raw.githubusercontent.com/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/main`;
             const url = `${baseUrl}/${filePath}?t=${timestamp}`;
             
+            console.log('Attempting to fetch:', url);
+            console.log('GitHub config:', GITHUB_CONFIG);
+            
             try {
                 const response = await fetch(url, { 
                     cache: 'no-store',
@@ -175,19 +189,24 @@
                     }
                 });
                 
+                console.log('Fetch response:', response.status, response.statusText);
+                
                 if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    throw new Error(`HTTP ${response.status}: ${response.statusText} - URL: ${url}`);
                 }
                 
                 if (filePath.endsWith('.xlsx') || filePath.endsWith('.xls')) {
                     const arrayBuffer = await response.arrayBuffer();
+                    console.log('Excel file loaded, size:', arrayBuffer.byteLength);
                     return { type: 'excel', data: arrayBuffer };
                 } else {
                     const text = await response.text();
+                    console.log('Text file loaded, length:', text.length);
                     return { type: 'text', data: text };
                 }
             } catch (error) {
                 console.error('Failed to fetch from GitHub:', error);
+                console.error('URL that failed:', url);
                 throw error;
             }
         };
@@ -210,23 +229,37 @@
 
         // Get available vocabulary files from GitHub
         const getAvailableFiles = async () => {
+            if (!GITHUB_CONFIG.owner || !GITHUB_CONFIG.repo) {
+                console.log('GitHub config missing, skipping file list fetch');
+                return [];
+            }
+            
             try {
                 const timestamp = new Date().getTime();
                 const apiUrl = `https://api.github.com/repos/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/contents/${GITHUB_CONFIG.dataFolder}?t=${timestamp}`;
                 
+                console.log('Fetching file list from:', apiUrl);
+                
                 const response = await fetch(apiUrl, { cache: 'no-store' });
+                console.log('File list API response:', response.status, response.statusText);
+                
                 if (!response.ok) {
-                    throw new Error(`GitHub API error: ${response.status}`);
+                    throw new Error(`GitHub API error: ${response.status} - ${response.statusText}`);
                 }
                 
                 const files = await response.json();
-                return files
+                console.log('Files found:', files);
+                
+                const vocabFiles = files
                     .filter(file => file.type === 'file' && (file.name.endsWith('.md') || file.name.endsWith('.xlsx') || file.name.endsWith('.xls')))
                     .map(file => ({
                         name: file.name,
                         path: `${GITHUB_CONFIG.dataFolder}/${file.name}`,
                         displayName: file.name.replace(/\.(md|xlsx|xls)$/, '')
                     }));
+                
+                console.log('Vocabulary files found:', vocabFiles);
+                return vocabFiles;
             } catch (error) {
                 console.warn('Failed to get available files from GitHub:', error);
                 return [];
@@ -967,9 +1000,18 @@
                                             重置词库
                                         </button>
                                     </div>
+                                {/* GitHub配置和状态显示 */}
+                                <div className="mb-4 p-4 bg-gray-50 rounded">
+                                    <h3 className="font-semibold mb-2">GitHub配置状态:</h3>
+                                    <p className="text-sm text-gray-600">
+                                        仓库: {GITHUB_CONFIG.owner ? `${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}` : '未配置'}
+                                    </p>
+                                    {!GITHUB_CONFIG.owner && (
+                                        <p className="text-sm text-red-600 mt-1">
+                                            请在代码中手动配置GitHub仓库信息
+                                        </p>
+                                    )}
                                 </div>
-
-                                {/* GitHub文件选择器 */}
                                 {GITHUB_CONFIG.owner && GITHUB_CONFIG.repo && availableFiles.length > 0 && (
                                     <div>
                                         <label className="block mb-3 text-lg font-medium">从GitHub仓库加载词库:</label>
