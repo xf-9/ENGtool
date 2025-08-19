@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>单词记忆游戏</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .card-flip {
+            perspective: 1000px;
+        }
+        .card-inner {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            text-align: center;
+            transition: transform 0.6s;
+            transform-style: preserve-3d;
+        }
+        .card-flip.flipped .card-inner {
+            transform: rotateY(180deg);
+        }
+        .card-front, .card-back {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            backface-visibility: hidden;
+        }
+        .card-back {
+            transform: rotateY(180deg);
+        }
+        /* 响应式字体大小 */
+        .word-title {
+            font-size: clamp(2.5rem, 5vw, 4rem);
+        }
+        .word-pos {
+            font-size: clamp(1.125rem, 2vw, 1.5rem);
+        }
+        .word-cn {
+            font-size: clamp(1.5rem, 3vw, 2.5rem);
+        }
+        .example-text {
+            font-size: clamp(0.875rem, 1.5vw, 1.125rem);
+        }
+        .defs-text {
+            font-size: clamp(0.875rem, 1.5vw, 1rem);
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useCallback } = React;
+
+        // 工具函数
+        const speak = (text, rate = 0.95, lang = 'en-US') => {
+            if ('speechSynthesis' in window) {
+                const utterance = new SpeechSynthesisUtterance(text);
+                utterance.lang = lang;
+                utterance.rate = rate;
+                speechSynthesis.speak(utterance);
+            }
+        };
+
+        const shuffle = (array) => {
+            const newArray = [...array];
+            for (let i = newArray.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [newArray[i], newArray[j]] = [newArray[j], newArray[i]];
+            }
+            return newArray;
+        };
+
+        // 优化的例句解析函数，支持最多6个句子
+        const parseExamples = (exText) => {
+            if (!exText) return [];
+            
+            const sentences = exText.split(';').filter(s => s.trim());
+            return sentences.slice(0, 6).map(sentence => {
+                const trimmed = sentence.trim();
+                if (trimmed.includes('|')) {
+                    const [en, cn] = trimmed.split('|').map(part => part.trim());
+                    return { en, cn };
+                } else {
+                    return { en: trimmed, cn: '' };
+                }
+            });
+        };
+
+        const parseMarkdown = (content) => {
+            const words = [];
+            const wordBlocks = content.split('## word:').filter(block => block.trim());
+            
+            wordBlocks.forEach(block => {
+                const lines = block.trim().split('\n');
+                const word = lines[0].trim();
+                let pos = '', cn = '', defs = '', ex = '';
+                
+                lines.forEach(line => {
+                    if (line.startsWith('pos:')) pos = line.replace('pos:', '').trim();
+                    else if (line.startsWith('cn:')) cn = line.replace('cn:', '').trim();
+                    else if (line.startsWith('defs:')) defs = line.replace('defs:', '').trim();
+                    else if (line.startsWith('ex:')) ex = line.replace('ex:', '').trim();
+                });
+                
+                if (word && pos && cn) {
+                    words.push({ word, pos, cn, defs, ex });
+                }
+            });
+            
+            return words;
+        };
+
+        const parseExcel = (data) => {
+            const worksheet = data.Sheets[data.SheetNames[0]];
+            const jsonData = XLSX.utils.sheet_to_json(worksheet);
+            
+            return jsonData.map(row => ({
+                word: row.word || '',
+                pos: row.pos || '',
+                cn: row.cn || '',
+                defs: row.defs || '',
+                ex: row.ex || ''
+            })).filter(item => item.word && item.pos && item.cn);
+        };
+
+        // 默认词库
+        const defaultWords = [
+            {
+                word: "acquisition",
+                pos: "n.",
+                cn: "获得；收购；习得",
+                defs: "language acquisition; company acquisition",
+                ex: "The company's latest acquisition strengthened its position in the tech industry.|公司最新的收购加强了其在科技行业的地位。;Early childhood is a critical period for language acquisition.|幼儿期是语言习得的关键时期。;The museum's newest acquisition is a rare painting from the 18th century.|博物馆的最新收藏品是一幅18世纪的珍贵画作。"
+            },
+            {
+                word: "utility",
+                pos: "n.",
+                cn: "实用性；公共事业（如水、电、燃气）",
+                defs: "utility bill; practical utility",
+                ex: "The new software's greatest utility is its ability to process data quickly.|新软件最大的实用性在于能快速处理数据。;Please pay the utility bill before the end of the month.|请在月底前支付公用事业费用。;The utility of this tool becomes apparent when dealing with complex calculations.|在处理复杂计算时，这个工具的实用性就显而易见了。"
+            },
+            {
+                word: "distinctive",
+                pos: "adj.",
+                cn: "独特的；与众不同的",
+                defs: "distinctive style; distinctive feature",
+                ex: "The restaurant is known for its distinctive flavors.|这家餐厅以其独特的风味而闻名。;His distinctive voice made him easy to recognize.|他独特的嗓音使人很容易认出他。;The architect's distinctive style is evident in all his buildings.|这位建筑师的独特风格在他所有的建筑中都很明显。"
+            },
+            {
+                word: "transform",
+                pos: "v.",
+                cn: "转换；改变；变换",
+                defs: "transform into; digital transformation",
+                ex: "Technology has transformed the way we communicate.|技术改变了我们交流的方式。;The old factory was transformed into a modern art gallery.|旧工厂被改造成了现代艺术画廊。;Education can transform people's lives.|教育可以改变人们的生活。"
+            },
+            {
+                word: "enhance",
+                pos: "v.",
+                cn: "提高；增强；改善",
+                defs: "enhance performance; enhance quality",
+                ex: "Regular exercise can enhance your physical health.|定期锻炼可以增强你的身体健康。;The new features will enhance user experience.|新功能将提升用户体验。;Good lighting can enhance the appearance of any room.|良好的照明可以改善任何房间的外观。"
+            },
+            {
+                word: "demonstrate",
+                pos: "v.",
+                cn: "证明；演示；表明",
+                defs: "demonstrate ability; demonstrate how to",
+                ex: "The experiment demonstrates the theory perfectly.|这个实验完美地证明了这个理论。;Can you demonstrate how to use this machine?|你能演示一下如何使用这台机器吗？;Her success demonstrates that hard work pays off.|她的成功证明了努力工作是有回报的。"
+            }
+        ];
+
+        // 单词卡片组件
+        const Flashcards = ({ words, autoSpeak, onTestWord, showWordList, toggleWordList }) => {
+            const [currentIndex, setCurrentIndex] = useState(0);
+            const [isFlipped, setIsFlipped] = useState(false);
+
+            const currentWord = words[currentIndex];
+
+            const handleFlip = () => {
+                setIsFlipped(!isFlipped);
+                if (!isFlipped && autoSpeak) {
+                    speak(currentWord.word);
+                }
+            };
+
+            const nextCard = () => {
+                setCurrentIndex((prev) => (prev + 1) % words.length);
+                setIsFlipped(false);
+            };
+
+            const prevCard = () => {
+                setCurrentIndex((prev) => (prev - 1 + words.length) % words.length);
+                setIsFlipped(false);
+            };
+
+            if (!currentWord) return <div className="text-xl text-center">没有单词数据</div>;
+
+            // 解析例句，支持最多3个显示
+            const examplePairs = parseExamples(currentWord.ex).slice(0, 3);
+
+            return (
+                <div className="max-w-7xl mx-auto p-4">
+                    <div className="flex justify-between items-center mb-6">
+                        <h2 className="text-3xl font-bold">单词卡片</h2>
+                        <button
+                            onClick={toggleWordList}
+                            className="px-6 py-3 bg-blue-500 text-white text-lg rounded hover:bg-blue-600"
+                        >
+                            {showWordList ? '隐藏词表' : '显示词表'}
+                        </button>
+                    </div>
+
+                    {showWordList && (
+                        <div className="mb-8 p-6 bg-gray-100 rounded-lg">
+                            <h3 className="text-xl font-bold mb-4">词表 ({words.length} 个单词)</h3>
+                            <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                                {words.map((word, index) => (
+                                    <button
+                                        key={index}
+                                        onClick={() => {
+                                            setCurrentIndex(index);
+                                            setIsFlipped(false);
+                                        }}
+                                        className={`p-3 rounded text-left text-base ${
+                                            index === currentIndex 
+                                                ? 'bg-blue-500 text-white' 
+                                                : 'bg-white hover:bg-gray-200'
+                                        }`}
+                                    >
+                                        {word.word}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="flex justify-center mb-8">
+                        {/* 修改卡片布局，去掉滚动，一次性显示全部内容 */}
+                        <div className={`card-flip max-w-[900px] w-[min(95vw,900px)] min-h-[600px] ${isFlipped ? 'flipped' : ''}`}>
+                            <div className="card-inner">
+                                {/* 正面 */}
+                                <div className="card-front bg-white border-2 border-gray-300 rounded-lg p-8 flex flex-col justify-center items-center cursor-pointer shadow-lg"
+                                     onClick={handleFlip}>
+                                    <h3 className="word-title font-bold mb-4">{currentWord.word}</h3>
+                                    <p className="word-pos text-gray-600">{currentWord.pos}</p>
+                                    <p className="text-base text-gray-400 mt-6">点击翻转</p>
+                                </div>
+
+                                {/* 背面 - 使用更紧凑的布局，一次性显示全部 */}
+                                <div className="card-back bg-blue-50 border-2 border-blue-300 rounded-lg p-6 cursor-pointer shadow-lg flex flex-col justify-between"
+                                     onClick={handleFlip}>
+                                    
+                                    <div className="text-center">
+                                        <h3 className="word-cn font-bold mb-4">{currentWord.cn}</h3>
+                                        
+                                        {currentWord.defs && (
+                                            <div className="mb-4">
+                                                <p className="text-lg font-semibold text-gray-700 mb-2">常用搭配：</p>
+                                                <p className="defs-text text-gray-600">{currentWord.defs}</p>
+                                            </div>
+                                        )}
+                                        
+                                        {examplePairs.length > 0 && (
+                                            <div className="mb-4">
+                                                <p className="text-lg font-semibold text-gray-700 mb-2">例句：</p>
+                                                <div className="space-y-2">
+                                                    {examplePairs.map((pair, idx) => (
+                                                        <div key={idx} className="text-left border-l-4 border-blue-300 pl-3 bg-white/50 py-2 rounded-r text-sm">
+                                                            <p className="text-gray-700 font-medium leading-relaxed">
+                                                                {pair.en}
+                                                            </p>
+                                                            {pair.cn && (
+                                                                <p className="text-gray-600 mt-1 leading-relaxed">
+                                                                    {pair.cn}
+                                                                </p>
+                                                            )}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                    
+                                    {/* 底部测试按钮 */}
+                                    <div className="pt-3 border-t border-blue-200 mt-3">
+                                        <button
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                onTestWord(currentWord);
+                                            }}
+                                            className="w-full px-4 py-3 bg-green-500 text-white rounded hover:bg-green-600 text-base font-medium"
+                                        >
+                                            立即测试这个单词
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="flex justify-center items-center space-x-6">
+                        <button
+                            onClick={prevCard}
+                            className="px-8 py-3 bg-gray-500 text-white text-lg rounded hover:bg-gray-600"
+                        >
+                            上一个
+                        </button>
+                        <span className="flex items-center text-xl font-semibold">
+                            {currentIndex + 1} / {words.length}
+                        </span>
+                        <button
+                            onClick={nextCard}
+                            className="px-8 py-3 bg-gray-500 text-white text-lg rounded hover:bg-gray-600"
+                        >
+                            下一个
+                        </button>
+                    </div>
+                </div>
+            );
+        };
+
+        // 选择题组件 - 修复困难模式bug
+        const Quiz = ({ words, mode, onBack, targetWord = null, autoSpeak }) => {
+            const [currentIndex, setCurrentIndex] = useState(0);
+            const [score, setScore] = useState(0);
+            const [answered, setAnswered] = useState(false);
+            const [selectedAnswer, setSelectedAnswer] = useState(null);
+            const [questions, setQuestions] = useState([]);
+
+            const generateQuestion = useCallback((word, allWords, isHard = false) => {
+                const isChinese = Math.random() < 0.5;
+                const question = isChinese ? word.cn : `${word.word} (${word.pos})`;
+                const correctAnswer = isChinese ? `${word.word} (${word.pos})` : word.cn;
+                
+                let options = [correctAnswer];
+                
+                // 修复困难模式逻辑
+                const otherWords = allWords.filter(w => w !== word);
+                const optionCount = isHard ? 4 : 2;
+                
+                if (isHard) {
+                    // 困难模式：优先选择同词性的干扰项
+                    const samePos = otherWords.filter(w => w.pos === word.pos);
+                    const differentPos = otherWords.filter(w => w.pos !== word.pos);
+                    
+                    // 先添加同词性的选项
+                    const shuffledSamePos = shuffle(samePos);
+                    for (let i = 0; i < Math.min(3, shuffledSamePos.length); i++) {
+                        const w = shuffledSamePos[i];
+                        const distractor = isChinese ? `${w.word} (${w.pos})` : w.cn;
+                        if (!options.includes(distractor)) {
+                            options.push(distractor);
+                        }
+                    }
+                    
+                    // 如果还不够，添加不同词性的选项
+                    const shuffledDifferentPos = shuffle(differentPos);
+                    for (let i = 0; i < shuffledDifferentPos.length && options.length < 5; i++) {
+                        const w = shuffledDifferentPos[i];
+                        const distractor = isChinese ? `${w.word} (${w.pos})` : w.cn;
+                        if (!options.includes(distractor)) {
+                            options.push(distractor);
+                        }
+                    }
+                } else {
+                    // 普通模式：随机选择干扰项
+                    const shuffledOthers = shuffle(otherWords);
+                    for (let i = 0; i < Math.min(optionCount, shuffledOthers.length); i++) {
+                        const w = shuffledOthers[i];
+                        const distractor = isChinese ? `${w.word} (${w.pos})` : w.cn;
+                        if (!options.includes(distractor)) {
+                            options.push(distractor);
+                        }
+                    }
+                }
+                
+                // 确保有足够的选项
+                while (options.length < (isHard ? 5 : 3) && options.length < allWords.length) {
+                    const randomWord = otherWords[Math.floor(Math.random() * otherWords.length)];
+                    const randomOption = isChinese ? `${randomWord.word} (${randomWord.pos})` : randomWord.cn;
+                    if (!options.includes(randomOption)) {
+                        options.push(randomOption);
+                    }
+                }
+                
+                options = shuffle(options);
+                
+                return {
+                    word,
+                    question,
+                    options,
+                    correctAnswer,
+                    isChinese
+                };
+            }, []);
+
+            useEffect(() => {
+                if (words.length === 0) {
+                    setQuestions([]);
+                    return;
+                }
+
+                if (targetWord) {
+                    // 单词测试模式
+                    const question = generateQuestion(targetWord, words, mode === 'hard');
+                    setQuestions([question]);
+                } else {
+                    // 正常闯关模式
+                    const shuffledWords = shuffle([...words]);
+                    const newQuestions = shuffledWords.map(word => 
+                        generateQuestion(word, words, mode === 'hard')
+                    );
+                    setQuestions(newQuestions);
+                }
+                setCurrentIndex(0);
+                setScore(0);
+                setAnswered(false);
+                setSelectedAnswer(null);
+            }, [words, mode, targetWord, generateQuestion]);
+
+            const handleAnswer = (answer) => {
+                if (answered) return;
+                
+                setSelectedAnswer(answer);
+                setAnswered(true);
+                
+                const isCorrect = answer === questions[currentIndex].correctAnswer;
+                
+                if (isCorrect) {
+                    if (autoSpeak) {
+                        speak(questions[currentIndex].word.word);
+                    }
+                    setScore(prev => prev + (mode === 'hard' ? 2 : 1));
+                } else {
+                    if (mode === 'hard') {
+                        setScore(prev => Math.max(0, prev - 2));
+                    }
+                }
+            };
+
+            const nextQuestion = () => {
+                if (targetWord) {
+                    // 单词测试完成，返回卡片模式
+                    onBack();
+                    return;
+                }
+                
+                if (currentIndex < questions.length - 1) {
+                    setCurrentIndex(prev => prev + 1);
+                    setAnswered(false);
+                    setSelectedAnswer(null);
+                } else {
+                    // 闯关完成
+                    alert(`闯关完成！最终得分: ${score}/${questions.length * (mode === 'hard' ? 2 : 1)}`);
+                    onBack();
+                }
+            };
+
+            if (words.length === 0) return <div className="text-xl text-center">没有单词数据</div>;
+            if (questions.length === 0) return <div className="text-xl text-center">加载中...</div>;
+
+            const currentQuestion = questions[currentIndex];
+
+            return (
+                <div className="max-w-4xl mx-auto p-6">
+                    <div className="flex justify-between items-center mb-8">
+                        <h2 className="text-3xl font-bold">
+                            {targetWord ? '单词测试' : '选择题闯关'}
+                            {mode === 'hard' && ' (困难模式)'}
+                        </h2>
+                        <div className="flex items-center space-x-6">
+                            <span className="text-xl font-semibold">得分: {score}</span>
+                            <button
+                                onClick={onBack}
+                                className="px-6 py-3 bg-gray-500 text-white text-lg rounded hover:bg-gray-600"
+                            >
+                                返回
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="bg-white p-8 rounded-lg shadow-lg">
+                        <div className="mb-6">
+                            <p className="text-lg text-gray-600">
+                                {targetWord ? '测试题目' : `第 ${currentIndex + 1} 题 / 共 ${questions.length} 题`}
+                            </p>
+                        </div>
+
+                        <h3 className="text-2xl font-bold mb-8 text-center">
+                            {currentQuestion.question}
+                        </h3>
+
+                        <div className="space-y-4">
+                            {currentQuestion.options.map((option, index) => (
+                                <button
+                                    key={index}
+                                    onClick={() => handleAnswer(option)}
+                                    disabled={answered}
+                                    className={`w-full p-6 text-left text-lg rounded-lg border-2 transition-colors ${
+                                        answered
+                                            ? option === currentQuestion.correctAnswer
+                                                ? 'bg-green-100 border-green-500 text-green-800'
+                                                : option === selectedAnswer
+                                                ? 'bg-red-100 border-red-500 text-red-800'
+                                                : 'bg-gray-100 border-gray-300'
+                                            : 'bg-gray-50 border-gray-300 hover:bg-gray-100'
+                                    }`}
+                                >
+                                    {option}
+                                </button>
+                            ))}
+                        </div>
+
+                        {answered && (
+                            <div className="mt-8 text-center">
+                                <p className={`text-xl font-bold mb-6 ${
+                                    selectedAnswer === currentQuestion.correctAnswer 
+                                        ? 'text-green-600' 
+                                        : 'text-red-600'
+                                }`}>
+                                    {selectedAnswer === currentQuestion.correctAnswer ? '正确！' : '错误！'}
+                                </p>
+                                
+                                {currentQuestion.word.ex && (
+                                    <div className="text-base text-gray-600 mb-6">
+                                        <p className="font-semibold text-lg mb-2">例句：</p>
+                                        {parseExamples(currentQuestion.word.ex).slice(0, 2).map((pair, idx) => (
+                                            <div key={idx} className="mb-3">
+                                                <p className="leading-relaxed">{pair.en}</p>
+                                                {pair.cn && <p className="text-gray-500 leading-relaxed">{pair.cn}</p>}
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                                
+                                <button
+                                    onClick={nextQuestion}
+                                    className="px-8 py-3 bg-blue-500 text-white text-lg rounded hover:bg-blue-600"
+                                >
+                                    {targetWord ? '返回卡片' : 
+                                     currentIndex < questions.length - 1 ? '下一题' : '完成'}
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
+        // 主应用组件
+        const App = () => {
+            const [currentMode, setCurrentMode] = useState('menu'); // menu, flashcards, quiz
+            const [quizMode, setQuizMode] = useState('normal'); // normal, hard
+            const [words, setWords] = useState([]);
+            const [autoSpeak, setAutoSpeak] = useState(true);
+            const [showWordList, setShowWordList] = useState(false);
+            const [targetWord, setTargetWord] = useState(null);
+            const [currentWordbank, setCurrentWordbank] = useState('default');
+
+            // 初始化设置和数据
+            useEffect(() => {
+                setWords(defaultWords);
+            }, []);
+
+            const handleImportFile = (event) => {
+                const file = event.target.files[0];
+                if (!file) return;
+
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        let importedWords = [];
+                        
+                        if (file.name.endsWith('.md')) {
+                            importedWords = parseMarkdown(e.target.result);
+                        } else if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
+                            const data = XLSX.read(e.target.result, { type: 'binary' });
+                            importedWords = parseExcel(data);
+                        }
+                        
+                        if (importedWords.length > 0) {
+                            setWords(importedWords);
+                            setCurrentWordbank('custom');
+                            alert(`成功导入 ${importedWords.length} 个单词！`);
+                        } else {
+                            alert('文件格式不正确或没有找到有效的单词数据！');
+                        }
+                    } catch (error) {
+                        alert('文件解析失败，请检查文件格式！');
+                    }
+                };
+
+                if (file.name.endsWith('.md')) {
+                    reader.readAsText(file);
+                } else {
+                    reader.readAsBinaryString(file);
+                }
+                
+                event.target.value = '';
+            };
+
+            const switchWordbank = (bankType) => {
+                if (bankType === 'default') {
+                    setWords(defaultWords);
+                    setCurrentWordbank('default');
+                } else if (bankType === 'custom') {
+                    alert('请先导入自定义词库文件！');
+                }
+            };
+
+            const clearCustomWordbank = () => {
+                if (window.confirm('确定要清空导入的词库吗？此操作不可恢复。')) {
+                    setWords(defaultWords);
+                    setCurrentWordbank('default');
+                    alert('已清空导入词库并切回默认词库');
+                }
+            };
+
+            const startQuiz = (mode) => {
+                setQuizMode(mode);
+                setCurrentMode('quiz');
+                setTargetWord(null);
+            };
+
+            const startWordTest = (word) => {
+                setTargetWord(word);
+                setQuizMode('normal');
+                setCurrentMode('quiz');
+            };
+
+            const toggleAutoSpeak = () => {
+                setAutoSpeak(!autoSpeak);
+            };
+
+            const toggleWordList = () => {
+                setShowWordList(!showWordList);
+            };
+
+            if (currentMode === 'flashcards') {
+                return (
+                    <div className="min-h-screen bg-gray-100">
+                        <div className="p-6">
+                            <button
+                                onClick={() => setCurrentMode('menu')}
+                                className="mb-6 px-6 py-3 bg-gray-500 text-white text-lg rounded hover:bg-gray-600"
+                            >
+                                ← 返回菜单
+                            </button>
+                        </div>
+                        <Flashcards
+                            words={words}
+                            autoSpeak={autoSpeak}
+                            onTestWord={startWordTest}
+                            showWordList={showWordList}
+                            toggleWordList={toggleWordList}
+                        />
+                    </div>
+                );
+            }
+
+            if (currentMode === 'quiz') {
+                return (
+                    <div className="min-h-screen bg-gray-100">
+                        <div className="p-6">
+                            <Quiz
+                                words={words}
+                                mode={quizMode}
+                                targetWord={targetWord}
+                                autoSpeak={autoSpeak}
+                                onBack={() => {
+                                    if (targetWord) {
+                                        setCurrentMode('flashcards');
+                                    } else {
+                                        setCurrentMode('menu');
+                                    }
+                                    setTargetWord(null);
+                                }}
+                            />
+                        </div>
+                    </div>
+                );
+            }
+
+            // 菜单界面
+            return (
+                <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
+                    <div className="container mx-auto px-6 py-10">
+                        <header className="text-center mb-10">
+                            <h1 className="text-5xl font-bold text-gray-800 mb-4">单词记忆游戏</h1>
+                            <p className="text-xl text-gray-600">提升英语词汇量的最佳工具</p>
+                        </header>
+
+                        {/* 词库管理 */}
+                        <div className="max-w-4xl mx-auto mb-10 p-8 bg-white rounded-lg shadow-md">
+                            <h2 className="text-2xl font-bold mb-6">词库管理</h2>
+                            <div className="space-y-6">
+                                <div>
+                                    <p className="mb-4 text-lg">当前词库: <span className="font-semibold">
+                                        {currentWordbank === 'default' ? '默认词库' : '导入词库'}
+                                    </span> ({words.length} 个单词)</p>
+                                    <div className="flex flex-wrap gap-3">
+                                        <button
+                                            onClick={() => switchWordbank('default')}
+                                            className={`px-6 py-3 text-lg rounded ${
+                                                currentWordbank === 'default'
+                                                    ? 'bg-blue-500 text-white'
+                                                    : 'bg-gray-200 hover:bg-gray-300'
+                                            }`}
+                                        >
+                                            切换到默认词库
+                                        </button>
+                                        <button
+                                            onClick={() => switchWordbank('custom')}
+                                            className={`px-6 py-3 text-lg rounded ${
+                                                currentWordbank === 'custom'
+                                                    ? 'bg-blue-500 text-white'
+                                                    : 'bg-gray-200 hover:bg-gray-300'
+                                            }`}
+                                        >
+                                            切换到导入词库
+                                        </button>
+                                        <button
+                                            onClick={clearCustomWordbank}
+                                            className="px-6 py-3 text-lg bg-red-500 text-white rounded hover:bg-red-600"
+                                        >
+                                            清空导入词库
+                                        </button>
+                                    </div>
+                                </div>
+                                <div>
+                                    <label className="block mb-3 text-lg font-medium">导入词库文件 (.md / .xlsx):</label>
+                                    <input
+                                        type="file"
+                                        accept=".md,.xlsx,.xls"
+                                        onChange={handleImportFile}
+                                        className="block w-full text-base text-gray-500 file:mr-4 file:py-3 file:px-6 file:rounded-full file:border-0 file:text-base file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                                    />
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* 设置 */}
+                        <div className="max-w-4xl mx-auto mb-10 p-8 bg-white rounded-lg shadow-md">
+                            <h2 className="text-2xl font-bold mb-6">设置</h2>
+                            <div className="flex items-center space-x-6">
+                                <label className="flex items-center text-lg">
+                                    <input
+                                        type="checkbox"
+                                        checked={autoSpeak}
+                                        onChange={toggleAutoSpeak}
+                                        className="mr-3 w-5 h-5"
+                                    />
+                                    自动发音
+                                </label>
+                            </div>
+                        </div>
+
+                        {/* 游戏模式 */}
+                        <div className="max-w-4xl mx-auto">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                                {/* 卡片翻转模式 */}
+                                <div className="bg-white p-8 rounded-lg shadow-md">
+                                    <h2 className="text-2xl font-bold mb-6">卡片翻转模式</h2>
+                                    <p className="text-lg text-gray-600 mb-6">
+                                        点击卡片查看释义和例句，支持立即测试功能，优化布局一次性显示全部内容
+                                    </p>
+                                    <button
+                                        onClick={() => setCurrentMode('flashcards')}
+                                        className="w-full px-6 py-4 bg-blue-500 text-white text-xl rounded-lg hover:bg-blue-600 font-semibold"
+                                    >
+                                        开始学习
+                                    </button>
+                                </div>
+
+                                {/* 选择题模式 */}
+                                <div className="bg-white p-8 rounded-lg shadow-md">
+                                    <h2 className="text-2xl font-bold mb-6">选择题闯关</h2>
+                                    <p className="text-lg text-gray-600 mb-6">
+                                        通过选择题测试词汇掌握程度
+                                    </p>
+                                    <div className="space-y-3">
+                                        <button
+                                            onClick={() => startQuiz('normal')}
+                                            className="w-full px-6 py-3 text-lg bg-green-500 text-white rounded hover:bg-green-600"
+                                        >
+                                            普通模式 (3选1)
+                                        </button>
+                                        <button
+                                            onClick={() => startQuiz('hard')}
+                                            className="w-full px-6 py-3 text-lg bg-red-500 text-white rounded hover:bg-red-600"
+                                        >
+                                            困难模式 (5选1)
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* 使用说明 */}
+                        <div className="max-w-4xl mx-auto mt-10 p-8 bg-white rounded-lg shadow-md">
+                            <h2 className="text-2xl font-bold mb-6">使用说明</h2>
+                            <div className="text-base text-gray-600 space-y-3">
+                                <p><strong>卡片模式：</strong>点击卡片翻转查看释义，背面自动发音，可立即测试单个单词，优化布局一次性显示全部内容</p>
+                                <p><strong>普通模式：</strong>3选1，答对+1分，答错不扣分</p>
+                                <p><strong>困难模式：</strong>5选1，随机中英文题干，同词性干扰项，答对+2分，答错-2分</p>
+                                <p><strong>字体优化：</strong>所有文字都已优化为更大的字体，支持响应式设计，在不同设备上都有良好的可读性</p>
+                                <p><strong>文件格式：</strong></p>
+                                <p>• Markdown: ## word: 单词名 → pos: 词性 → cn: 中文 → defs: 搭配 → ex: 例句</p>
+                                <p>• Excel: 包含word、pos、cn、defs、ex列，多个例句/搭配用分号分隔</p>
+                                <p>• 例句支持英中对照格式：英文|中文；英文|中文；英文|中文</p>
+                                <p><strong>修复更新：</strong>修复了困难模式无限加载的bug，优化了卡片布局，去掉滚动条，一次性显示全部内容</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // 渲染应用
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>
