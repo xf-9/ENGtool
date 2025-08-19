@@ -59,44 +59,52 @@
 
         // Configuration for GitHub repository
         const GITHUB_CONFIG = {
-            owner: 'xf-9', // Set your GitHub username here
-            repo: 'ENGtool', // Set your repository name here
+            owner: '',
+            repo: '',
             dataFolder: 'data',
             defaultFile: 'words_default.md'
         };
 
-        // Auto-detect GitHub repository info from current URL
+        // 修复：改进的GitHub配置检测
         const initGitHubConfig = () => {
             const hostname = window.location.hostname;
             const pathname = window.location.pathname;
-            const pathParts = pathname.split('/').filter(p => p);
             
-            console.log('Current URL info:', { hostname, pathname, pathParts });
+            console.log('Current URL:', window.location.href);
+            console.log('Hostname:', hostname);
+            console.log('Pathname:', pathname);
             
             if (hostname.endsWith('.github.io')) {
-                const ownerPart = hostname.replace('.github.io', '');
+                const pathParts = pathname.split('/').filter(p => p);
                 
-                if (pathParts.length > 0) {
-                    // Project pages like username.github.io/repo-name
-                    GITHUB_CONFIG.owner = ownerPart;
-                    GITHUB_CONFIG.repo = pathParts[0];
-                } else {
-                    // User/org pages like username.github.io
-                    GITHUB_CONFIG.owner = ownerPart;
-                    GITHUB_CONFIG.repo = ownerPart + '.github.io';
+                if (hostname.includes('.github.io')) {
+                    // 提取用户名（去掉.github.io后缀）
+                    const username = hostname.replace('.github.io', '');
+                    GITHUB_CONFIG.owner = username;
+                    
+                    // 如果是 username.github.io/repo-name 格式
+                    if (pathParts.length > 0) {
+                        GITHUB_CONFIG.repo = pathParts[0];
+                    } else {
+                        // 如果是 username.github.io 主页，默认使用用户名作为仓库名
+                        GITHUB_CONFIG.repo = username + '.github.io';
+                    }
                 }
-            } else {
-                // For local development or custom domains, set manually
-                // You can uncomment and modify these for testing:
-                // GITHUB_CONFIG.owner = 'xf-9';
-                // GITHUB_CONFIG.repo = 'ENGtool';
+            }
+            
+            // 手动设置配置（如果自动检测失败）
+            if (!GITHUB_CONFIG.owner || !GITHUB_CONFIG.repo) {
+                // 从当前URL尝试解析
+                const pathMatch = pathname.match(/^\/([^\/]+)/);
+                if (pathMatch && hostname.endsWith('.github.io')) {
+                    GITHUB_CONFIG.owner = hostname.replace('.github.io', '');
+                    GITHUB_CONFIG.repo = pathMatch[1];
+                }
             }
             
             console.log('GitHub Config detected:', GITHUB_CONFIG);
+            return GITHUB_CONFIG.owner && GITHUB_CONFIG.repo;
         };
-
-        // Initialize GitHub config
-        initGitHubConfig();
 
         // 工具函数
         const speak = (text, rate = 0.95, lang = 'en-US') => {
@@ -170,45 +178,49 @@
             })).filter(item => item.word && item.pos && item.cn);
         };
 
-        // GitHub file fetching utilities
+        // 修复：改进的GitHub文件获取函数
         const fetchFromGitHub = async (filePath) => {
             const timestamp = new Date().getTime();
-            const baseUrl = `https://raw.githubusercontent.com/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/main`;
-            const url = `${baseUrl}/${filePath}?t=${timestamp}`;
+            // 使用jsdelivr CDN作为备选方案，更稳定
+            const urls = [
+                `https://raw.githubusercontent.com/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/main/${filePath}?t=${timestamp}`,
+                `https://cdn.jsdelivr.net/gh/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}@main/${filePath}?t=${timestamp}`
+            ];
             
-            console.log('Attempting to fetch:', url);
-            console.log('GitHub config:', GITHUB_CONFIG);
+            let lastError;
             
-            try {
-                const response = await fetch(url, { 
-                    cache: 'no-store',
-                    headers: {
-                        'Cache-Control': 'no-cache, no-store, must-revalidate',
-                        'Pragma': 'no-cache',
-                        'Expires': '0'
+            for (const url of urls) {
+                try {
+                    console.log(`Trying to fetch from: ${url}`);
+                    
+                    const response = await fetch(url, { 
+                        cache: 'no-store',
+                        headers: {
+                            'Cache-Control': 'no-cache, no-store, must-revalidate',
+                            'Pragma': 'no-cache',
+                            'Expires': '0'
+                        }
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
                     }
-                });
-                
-                console.log('Fetch response:', response.status, response.statusText);
-                
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}: ${response.statusText} - URL: ${url}`);
+                    
+                    if (filePath.endsWith('.xlsx') || filePath.endsWith('.xls')) {
+                        const arrayBuffer = await response.arrayBuffer();
+                        return { type: 'excel', data: arrayBuffer };
+                    } else {
+                        const text = await response.text();
+                        return { type: 'text', data: text };
+                    }
+                } catch (error) {
+                    console.warn(`Failed to fetch from ${url}:`, error);
+                    lastError = error;
+                    continue;
                 }
-                
-                if (filePath.endsWith('.xlsx') || filePath.endsWith('.xls')) {
-                    const arrayBuffer = await response.arrayBuffer();
-                    console.log('Excel file loaded, size:', arrayBuffer.byteLength);
-                    return { type: 'excel', data: arrayBuffer };
-                } else {
-                    const text = await response.text();
-                    console.log('Text file loaded, length:', text.length);
-                    return { type: 'text', data: text };
-                }
-            } catch (error) {
-                console.error('Failed to fetch from GitHub:', error);
-                console.error('URL that failed:', url);
-                throw error;
             }
+            
+            throw lastError || new Error('All fetch attempts failed');
         };
 
         const parseGitHubFile = (fileResult, fileName) => {
@@ -227,39 +239,62 @@
             }
         };
 
-        // Get available vocabulary files from GitHub
+        // 修复：改进的可用文件获取函数
         const getAvailableFiles = async () => {
             if (!GITHUB_CONFIG.owner || !GITHUB_CONFIG.repo) {
-                console.log('GitHub config missing, skipping file list fetch');
+                console.warn('GitHub config not available');
                 return [];
             }
             
             try {
                 const timestamp = new Date().getTime();
-                const apiUrl = `https://api.github.com/repos/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/contents/${GITHUB_CONFIG.dataFolder}?t=${timestamp}`;
+                // GitHub API 和 jsdelivr API 作为备选
+                const urls = [
+                    `https://api.github.com/repos/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/contents/${GITHUB_CONFIG.dataFolder}?t=${timestamp}`,
+                    `https://data.jsdelivr.com/v1/package/gh/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/tree?t=${timestamp}`
+                ];
                 
-                console.log('Fetching file list from:', apiUrl);
-                
-                const response = await fetch(apiUrl, { cache: 'no-store' });
-                console.log('File list API response:', response.status, response.statusText);
-                
-                if (!response.ok) {
-                    throw new Error(`GitHub API error: ${response.status} - ${response.statusText}`);
+                for (const url of urls) {
+                    try {
+                        const response = await fetch(url, { cache: 'no-store' });
+                        if (!response.ok) {
+                            throw new Error(`API error: ${response.status}`);
+                        }
+                        
+                        const data = await response.json();
+                        let files = [];
+                        
+                        if (url.includes('api.github.com')) {
+                            // GitHub API 格式
+                            files = data
+                                .filter(file => file.type === 'file' && (file.name.endsWith('.md') || file.name.endsWith('.xlsx') || file.name.endsWith('.xls')))
+                                .map(file => ({
+                                    name: file.name,
+                                    path: `${GITHUB_CONFIG.dataFolder}/${file.name}`,
+                                    displayName: file.name.replace(/\.(md|xlsx|xls)$/, '')
+                                }));
+                        } else {
+                            // jsdelivr API 格式
+                            const dataFolderFiles = data.files && data.files.find(f => f.name === GITHUB_CONFIG.dataFolder);
+                            if (dataFolderFiles && dataFolderFiles.files) {
+                                files = dataFolderFiles.files
+                                    .filter(file => file.name.endsWith('.md') || file.name.endsWith('.xlsx') || file.name.endsWith('.xls'))
+                                    .map(file => ({
+                                        name: file.name,
+                                        path: `${GITHUB_CONFIG.dataFolder}/${file.name}`,
+                                        displayName: file.name.replace(/\.(md|xlsx|xls)$/, '')
+                                    }));
+                            }
+                        }
+                        
+                        return files;
+                    } catch (error) {
+                        console.warn(`Failed to fetch from ${url}:`, error);
+                        continue;
+                    }
                 }
                 
-                const files = await response.json();
-                console.log('Files found:', files);
-                
-                const vocabFiles = files
-                    .filter(file => file.type === 'file' && (file.name.endsWith('.md') || file.name.endsWith('.xlsx') || file.name.endsWith('.xls')))
-                    .map(file => ({
-                        name: file.name,
-                        path: `${GITHUB_CONFIG.dataFolder}/${file.name}`,
-                        displayName: file.name.replace(/\.(md|xlsx|xls)$/, '')
-                    }));
-                
-                console.log('Vocabulary files found:', vocabFiles);
-                return vocabFiles;
+                return [];
             } catch (error) {
                 console.warn('Failed to get available files from GitHub:', error);
                 return [];
@@ -691,13 +726,14 @@
             const [availableFiles, setAvailableFiles] = useState([]);
             const [selectedGitHubFile, setSelectedGitHubFile] = useState('');
             const [loadingFromGitHub, setLoadingFromGitHub] = useState(false);
+            const [githubConfigValid, setGithubConfigValid] = useState(false);
 
             // 从URL参数加载词库
             const loadFromUrlParam = useCallback(async () => {
                 const urlParams = new URLSearchParams(window.location.search);
                 const srcParam = urlParams.get('src');
                 
-                if (srcParam && GITHUB_CONFIG.owner && GITHUB_CONFIG.repo) {
+                if (srcParam && githubConfigValid) {
                     try {
                         setLoadingFromGitHub(true);
                         const fileResult = await fetchFromGitHub(srcParam);
@@ -711,21 +747,27 @@
                         }
                     } catch (error) {
                         console.error('Failed to load from URL parameter:', error);
-                        alert(`无法从URL参数加载词库: ${srcParam}`);
+                        alert(`无法从URL参数加载词库: ${srcParam}\n错误: ${error.message}`);
+                        // 回退到默认词库
+                        setWords(defaultWords);
+                        setCurrentWordbank('default');
                     } finally {
                         setLoadingFromGitHub(false);
                     }
                 }
-            }, []);
+            }, [githubConfigValid]);
 
             // 加载默认GitHub词库
             const loadDefaultGitHubWordbank = useCallback(async () => {
-                if (!GITHUB_CONFIG.owner || !GITHUB_CONFIG.repo) {
-                    console.log('GitHub config not available, using built-in default words');
+                if (!githubConfigValid) {
+                    console.log('GitHub config not valid, using built-in default words');
+                    setWords(defaultWords);
+                    setCurrentWordbank('default');
                     return;
                 }
 
                 try {
+                    setLoadingFromGitHub(true);
                     const defaultPath = `${GITHUB_CONFIG.dataFolder}/${GITHUB_CONFIG.defaultFile}`;
                     const fileResult = await fetchFromGitHub(defaultPath);
                     const parsedWords = parseGitHubFile(fileResult, GITHUB_CONFIG.defaultFile);
@@ -742,19 +784,25 @@
                     console.warn('Failed to load default GitHub wordbank, using built-in defaults:', error);
                     setWords(defaultWords);
                     setCurrentWordbank('default');
+                } finally {
+                    setLoadingFromGitHub(false);
                 }
-            }, []);
+            }, [githubConfigValid]);
 
             // 初始化设置和数据
             useEffect(() => {
                 const init = async () => {
+                    // 初始化GitHub配置
+                    const configValid = initGitHubConfig();
+                    setGithubConfigValid(configValid);
+                    
                     // First check URL parameters
                     const urlParams = new URLSearchParams(window.location.search);
                     const srcParam = urlParams.get('src');
                     
-                    if (srcParam) {
+                    if (srcParam && configValid) {
                         await loadFromUrlParam();
-                    } else if (GITHUB_CONFIG.owner && GITHUB_CONFIG.repo) {
+                    } else if (configValid) {
                         // Try to load default from GitHub
                         await loadDefaultGitHubWordbank();
                     } else {
@@ -764,7 +812,7 @@
                     }
 
                     // Load available files list
-                    if (GITHUB_CONFIG.owner && GITHUB_CONFIG.repo) {
+                    if (configValid) {
                         try {
                             const files = await getAvailableFiles();
                             setAvailableFiles(files);
@@ -775,7 +823,14 @@
                 };
 
                 init();
-            }, [loadFromUrlParam, loadDefaultGitHubWordbank]);
+            }, []); // 只在组件挂载时运行一次
+
+            // 更新loadFromUrlParam依赖
+            useEffect(() => {
+                if (githubConfigValid) {
+                    loadFromUrlParam();
+                }
+            }, [githubConfigValid, loadFromUrlParam]);
 
             // 处理GitHub文件选择
             const handleGitHubFileChange = async (filePath) => {
@@ -847,7 +902,7 @@
                     setCurrentWordbank('default');
                     setSelectedGitHubFile('');
                 } else if (bankType === 'github') {
-                    if (GITHUB_CONFIG.owner && GITHUB_CONFIG.repo) {
+                    if (githubConfigValid) {
                         await loadDefaultGitHubWordbank();
                     } else {
                         alert('GitHub配置不可用，请检查部署环境！');
@@ -940,6 +995,23 @@
                             <p className="text-xl text-gray-600">提升英语词汇量的最佳工具</p>
                         </header>
 
+                        {/* GitHub 配置状态显示 */}
+                        {githubConfigValid && (
+                            <div className="max-w-4xl mx-auto mb-6 p-4 bg-green-100 border border-green-300 rounded-lg">
+                                <p className="text-green-800">
+                                    ✅ GitHub配置已检测到: <strong>{GITHUB_CONFIG.owner}/{GITHUB_CONFIG.repo}</strong>
+                                </p>
+                            </div>
+                        )}
+
+                        {!githubConfigValid && (
+                            <div className="max-w-4xl mx-auto mb-6 p-4 bg-yellow-100 border border-yellow-300 rounded-lg">
+                                <p className="text-yellow-800">
+                                    ⚠️ 未检测到GitHub配置，将使用内置默认词库。如需使用GitHub词库功能，请确保项目部署在GitHub Pages上。
+                                </p>
+                            </div>
+                        )}
+
                         {/* 词库管理 */}
                         <div className="max-w-4xl mx-auto mb-10 p-8 bg-white rounded-lg shadow-md">
                             <h2 className="text-2xl font-bold mb-6">词库管理</h2>
@@ -956,6 +1028,12 @@
                                         </p>
                                     )}
                                     
+                                    {loadingFromGitHub && (
+                                        <p className="mb-4 text-sm text-blue-600">
+                                            ⏳ 正在从GitHub加载词库...
+                                        </p>
+                                    )}
+                                    
                                     <div className="flex flex-wrap gap-3 mb-4">
                                         <button
                                             onClick={() => switchWordbank('default')}
@@ -968,7 +1046,7 @@
                                             切换到内置词库
                                         </button>
                                         
-                                        {GITHUB_CONFIG.owner && GITHUB_CONFIG.repo && (
+                                        {githubConfigValid && (
                                             <button
                                                 onClick={() => switchWordbank('github')}
                                                 disabled={loadingFromGitHub}
@@ -1000,19 +1078,10 @@
                                             重置词库
                                         </button>
                                     </div>
-                                {/* GitHub配置和状态显示 */}
-                                <div className="mb-4 p-4 bg-gray-50 rounded">
-                                    <h3 className="font-semibold mb-2">GitHub配置状态:</h3>
-                                    <p className="text-sm text-gray-600">
-                                        仓库: {GITHUB_CONFIG.owner ? `${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}` : '未配置'}
-                                    </p>
-                                    {!GITHUB_CONFIG.owner && (
-                                        <p className="text-sm text-red-600 mt-1">
-                                            请在代码中手动配置GitHub仓库信息
-                                        </p>
-                                    )}
                                 </div>
-                                {GITHUB_CONFIG.owner && GITHUB_CONFIG.repo && availableFiles.length > 0 && (
+
+                                {/* GitHub文件选择器 */}
+                                {githubConfigValid && availableFiles.length > 0 && (
                                     <div>
                                         <label className="block mb-3 text-lg font-medium">从GitHub仓库加载词库:</label>
                                         <select
@@ -1118,7 +1187,7 @@
                                 <p>• Excel: 包含word、pos、cn、defs、ex列，多个例句/搭配用分号分隔</p>
                                 <p>• 例句支持英中对照格式：英文|中文；英文|中文；英文|中文</p>
                                 <p><strong>URL参数：</strong>可使用 ?src=data/filename.md 直接加载指定词库文件</p>
-                                {GITHUB_CONFIG.owner && GITHUB_CONFIG.repo && (
+                                {githubConfigValid && (
                                     <p><strong>当前仓库：</strong> {GITHUB_CONFIG.owner}/{GITHUB_CONFIG.repo}</p>
                                 )}
                             </div>
