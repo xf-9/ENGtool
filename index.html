@@ -57,50 +57,6 @@
     <script type="text/babel">
         const { useState, useEffect, useCallback } = React;
 
-        // Configuration for GitHub repository
-        const GITHUB_CONFIG = {
-            owner: '', // Will be auto-detected from current URL
-            repo: '', // Will be auto-detected from current URL
-            dataFolder: 'data',
-            defaultFile: 'words_default.md'
-        };
-
-        // 改进的GitHub配置检测
-        const initGitHubConfig = () => {
-            const hostname = window.location.hostname;
-            const pathname = window.location.pathname;
-            
-            if (hostname.endsWith('.github.io')) {
-                const parts = hostname.split('.');
-                if (parts.length >= 3) {
-                    // 格式: username.github.io
-                    GITHUB_CONFIG.owner = parts[0];
-                    
-                    // 从路径获取仓库名
-                    const pathParts = pathname.split('/').filter(p => p);
-                    if (pathParts.length > 0) {
-                        // 格式: username.github.io/repo-name
-                        GITHUB_CONFIG.repo = pathParts[0];
-                    } else {
-                        // 可能是 username.github.io 主站
-                        GITHUB_CONFIG.repo = GITHUB_CONFIG.owner + '.github.io';
-                    }
-                }
-            }
-            
-            // 手动配置（如果自动检测失败）
-            if (!GITHUB_CONFIG.owner || !GITHUB_CONFIG.repo) {
-                // 根据你的截图，手动设置正确的值
-                GITHUB_CONFIG.owner = 'xf-9';
-                GITHUB_CONFIG.repo = 'ENGtool';
-            }
-            
-            console.log('GitHub Config:', GITHUB_CONFIG);
-        };
-
-        // Initialize GitHub config
-        initGitHubConfig();
-
         // 工具函数
         const speak = (text, rate = 0.95, lang = 'en-US') => {
             if ('speechSynthesis' in window) {
@@ -120,10 +76,11 @@
             return newArray;
         };
 
+        // 优化的例句解析函数，支持最多6个句子
         const parseExamples = (exText) => {
             if (!exText) return [];
-            // Support both ASCII ';' and Chinese '；' as separators
-            const sentences = exText.split(/[;；]/).filter(s => s.trim());
+            
+            const sentences = exText.split(';').filter(s => s.trim());
             return sentences.slice(0, 6).map(sentence => {
                 const trimmed = sentence.trim();
                 if (trimmed.includes('|')) {
@@ -137,54 +94,25 @@
 
         const parseMarkdown = (content) => {
             const words = [];
-            if (!content || typeof content !== 'string') return words;
-
-            // Normalize line endings
-            const text = content.replace(/\r\n/g, '\n');
-
-            // Match each word block: a heading like "## word: something" OR "word: something"
-            // Then capture everything until the next "word:" heading or EOF
-            const blockRegex = /(?:^|\n)\s*(?:#{1,6}\s*)?word:\s*([^\n]+)\s*\n?([\s\S]*?)(?=(?:^|\n)\s*(?:#{1,6}\s*)?word:|\s*$)/gi;
-
-            let match;
-            while ((match = blockRegex.exec(text)) !== null) {
-                const word = (match[1] || '').trim();
-                const body = (match[2] || '').trim();
-
-                if (!word) continue;
-
-                // To support "pos: ... cn: ... defs: ... ex: ..." either on one line or multiple,
-                // scan the body for labeled sections in any order.
-                // We split the body by markers while preserving the marker label.
-                const sections = {};
-                const tokens = ['pos', 'cn', 'defs', 'ex'];
-
-                // Insert a delimiter before each token so we can split reliably.
-                const prepared = body.replace(/(pos|cn|defs|ex)\s*:/gi, '§§$1:');
-                const chunks = prepared.split('§§').map(c => c.trim()).filter(Boolean);
-
-                for (const chunk of chunks) {
-                    const m = /^([a-z]+)\s*:\s*([\s\S]*)$/i.exec(chunk);
-                    if (m) {
-                        const key = m[1].toLowerCase();
-                        const val = (m[2] || '').trim();
-                        if (tokens.includes(key) && !sections[key]) {
-                            sections[key] = val;
-                        }
-                    }
-                }
-
-                const pos = (sections.pos || '').trim();
-                const cn = (sections.cn || '').trim();
-                const defs = (sections.defs || '').trim();
-                const ex = (sections.ex || '').trim();
-
-                // Only accept entries that at least have word, pos, and cn
+            const wordBlocks = content.split('## word:').filter(block => block.trim());
+            
+            wordBlocks.forEach(block => {
+                const lines = block.trim().split('\n');
+                const word = lines[0].trim();
+                let pos = '', cn = '', defs = '', ex = '';
+                
+                lines.forEach(line => {
+                    if (line.startsWith('pos:')) pos = line.replace('pos:', '').trim();
+                    else if (line.startsWith('cn:')) cn = line.replace('cn:', '').trim();
+                    else if (line.startsWith('defs:')) defs = line.replace('defs:', '').trim();
+                    else if (line.startsWith('ex:')) ex = line.replace('ex:', '').trim();
+                });
+                
                 if (word && pos && cn) {
                     words.push({ word, pos, cn, defs, ex });
                 }
-            }
-
+            });
+            
             return words;
         };
 
@@ -201,162 +129,34 @@
             })).filter(item => item.word && item.pos && item.cn);
         };
 
-        // 改进的GitHub文件获取
-        const fetchFromGitHub = async (filePath) => {
-            // 添加时间戳防止缓存
-            const timestamp = new Date().getTime();
-            const baseUrl = `https://raw.githubusercontent.com/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/main`;
-            const url = `${baseUrl}/${filePath}?t=${timestamp}`;
-            
-            console.log('Fetching from:', url);
-            
+        // 从GitHub Pages读取markdown文件
+        const loadWordFileFromGitHub = async (filename) => {
             try {
-                const response = await fetch(url, { 
-                    cache: 'no-store',
-                    headers: {
-                        'Cache-Control': 'no-cache, no-store, must-revalidate',
-                        'Pragma': 'no-cache',
-                        'Expires': '0'
-                    }
-                });
-                
+                const response = await fetch(`./data/${filename}`);
                 if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    throw new Error(`HTTP error! status: ${response.status}`);
                 }
-                
-                if (filePath.endsWith('.xlsx') || filePath.endsWith('.xls')) {
-                    const arrayBuffer = await response.arrayBuffer();
-                    return { type: 'excel', data: arrayBuffer };
-                } else {
-                    const text = await response.text();
-                    return { type: 'text', data: text };
-                }
+                const content = await response.text();
+                return parseMarkdown(content);
             } catch (error) {
-                console.error('Failed to fetch from GitHub:', error);
+                console.error('Failed to load word file:', error);
                 throw error;
             }
         };
 
-        // 本地优先读取（同目录 data/），失败则回退到 GitHub RAW
-        const fetchLocal = async (filePath) => {
-            const url = `${filePath}?t=${Date.now()}`;
-            const resp = await fetch(url, { cache: 'no-store' });
-            if (!resp.ok) throw new Error(`Local HTTP ${resp.status}`);
-            if (/\.(xlsx?|xls)$/i.test(filePath)) {
-                const arrayBuffer = await resp.arrayBuffer();
-                return { type: 'excel', data: arrayBuffer };
-            }
-            const text = await resp.text();
-            return { type: 'text', data: text };
-        };
-
-        const fetchWordFile = async (filePath) => {
-            try {
-                // 尝试从相对路径读取（GitHub Pages 同源）
-                return await fetchLocal(filePath);
-            } catch (e) {
-                console.warn('Local read failed, fallback to GitHub RAW:', e.message);
-                return await fetchFromGitHub(filePath);
-            }
-        };
-
-        const parseGitHubFile = (fileResult, fileName) => {
-            try {
-                if (fileResult.type === 'excel') {
-                    const workbook = XLSX.read(fileResult.data, { type: 'array' });
-                    return parseExcel(workbook);
-                } else if (fileName.endsWith('.md')) {
-                    return parseMarkdown(fileResult.data);
-                } else {
-                    throw new Error('Unsupported file type');
-                }
-            } catch (error) {
-                console.error('Failed to parse GitHub file:', error);
-                throw error;
-            }
-        };
-
-        // 改进的文件列表获取：优先读取本地 manifest，然后回退到 GitHub API / 预定义列表
-        const getAvailableFiles = async () => {
-            // 方法0：优先尝试本地 manifest（同目录 data/manifest.json）
-            try {
-                const resp = await fetch(`data/manifest.json?ts=${Date.now()}`, { cache: 'no-store' });
-                if (resp.ok) {
-                    const manifest = await resp.json();
-                    if (manifest && Array.isArray(manifest.files) && manifest.files.length > 0) {
-                        return manifest.files
-                            .filter(name => /\.(md|xlsx?|xls)$/i.test(name))
-                            .map(name => ({
-                                name,
-                                path: `${GITHUB_CONFIG.dataFolder}/${name}`,
-                                displayName: name.replace(/\.(md|xlsx?|xls)$/i, '')
-                            }));
-                    }
-                }
-            } catch (e) {
-                console.warn('Local manifest not found or invalid, will try fallback methods:', e.message);
-            }
-
-            // 回退方法：GitHub API 与 预定义文件探测
-            const methods = [
-                // 方法1: GitHub API
-                async () => {
-                    const timestamp = new Date().getTime();
-                    const apiUrl = `https://api.github.com/repos/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/contents/${GITHUB_CONFIG.dataFolder}?t=${timestamp}`;
-                    const response = await fetch(apiUrl, { 
-                        cache: 'no-store',
-                        headers: { 'Accept': 'application/vnd.github.v3+json' }
-                    });
-                    if (!response.ok) throw new Error(`GitHub API error: ${response.status}`);
-                    const files = await response.json();
-                    return files
-                        .filter(file => file.type === 'file' && (file.name.endsWith('.md') || file.name.endsWith('.xlsx') || file.name.endsWith('.xls')))
-                        .map(file => ({
-                            name: file.name,
-                            path: `${GITHUB_CONFIG.dataFolder}/${file.name}`,
-                            displayName: file.name.replace(/\.(md|xlsx|xls)$/, '')
-                        }));
-                },
-                // 方法2: 预定义的文件名逐个探测（RAW 或本地）
-                async () => {
-                    console.log('Using fallback file list method');
-                    const commonFiles = [
-                        'words_default.md',
-                        'words_basic.md',
-                        'words_advanced.md',
-                        'vocabulary.xlsx'
-                    ];
-                    const availableFiles = [];
-                    for (const fileName of commonFiles) {
-                        try {
-                            const filePath = `${GITHUB_CONFIG.dataFolder}/${fileName}`;
-                            await fetchWordFile(filePath); // 本地优先，失败回退 RAW
-                            availableFiles.push({
-                                name: fileName,
-                                path: filePath,
-                                displayName: fileName.replace(/\.(md|xlsx|xls)$/, '')
-                            });
-                        } catch (error) {
-                            console.log(`File ${fileName} not found, skipping`);
-                        }
-                    }
-                    return availableFiles;
-                }
+        // 获取data目录下所有.md文件列表
+        const getAvailableWordFiles = () => {
+            // GitHub Pages环境下，我们需要预定义可用的文件列表
+            // 如果你有更多文件，请在这里添加
+            return [
+                { filename: 'word3.md', displayName: 'Word3 词库' },
+                // 你可以在这里添加更多文件
+                // { filename: 'word1.md', displayName: 'Word1 词库' },
+                // { filename: 'word2.md', displayName: 'Word2 词库' },
             ];
-
-            for (const method of methods) {
-                try {
-                    const result = await method();
-                    if (result && result.length > 0) return result;
-                } catch (error) {
-                    console.warn('Method failed, trying next:', error.message);
-                }
-            }
-            console.warn('All methods failed to get file list');
-            return [];
         };
 
-        // 默认词库
+        // 默认词库（作为备选）
         const defaultWords = [
             {
                 word: "acquisition",
@@ -378,27 +178,6 @@
                 cn: "独特的；与众不同的",
                 defs: "distinctive style; distinctive feature",
                 ex: "The restaurant is known for its distinctive flavors.|这家餐厅以其独特的风味而闻名。;His distinctive voice made him easy to recognize.|他独特的嗓音使人很容易认出他。;The architect's distinctive style is evident in all his buildings.|这位建筑师的独特风格在他所有的建筑中都很明显。"
-            },
-            {
-                word: "transform",
-                pos: "v.",
-                cn: "转换；改变；变换",
-                defs: "transform into; digital transformation",
-                ex: "Technology has transformed the way we communicate.|技术改变了我们交流的方式。;The old factory was transformed into a modern art gallery.|旧工厂被改造成了现代艺术画廊。;Education can transform people's lives.|教育可以改变人们的生活。"
-            },
-            {
-                word: "enhance",
-                pos: "v.",
-                cn: "提高；增强；改善",
-                defs: "enhance performance; enhance quality",
-                ex: "Regular exercise can enhance your physical health.|定期锻炼可以增强你的身体健康。;The new features will enhance user experience.|新功能将提升用户体验。;Good lighting can enhance the appearance of any room.|良好的照明可以改善任何房间的外观。"
-            },
-            {
-                word: "demonstrate",
-                pos: "v.",
-                cn: "证明；演示；表明",
-                defs: "demonstrate ability; demonstrate how to",
-                ex: "The experiment demonstrates the theory perfectly.|这个实验完美地证明了这个理论。;Can you demonstrate how to use this machine?|你能演示一下如何使用这台机器吗？;Her success demonstrates that hard work pays off.|她的成功证明了努力工作是有回报的。"
             }
         ];
 
@@ -771,153 +550,59 @@
 
         // 主应用组件
         const App = () => {
-            const [currentMode, setCurrentMode] = useState('menu'); // menu, flashcards, quiz
-            const [quizMode, setQuizMode] = useState('normal'); // normal, hard
+            const [currentMode, setCurrentMode] = useState('menu');
+            const [quizMode, setQuizMode] = useState('normal');
             const [words, setWords] = useState([]);
             const [autoSpeak, setAutoSpeak] = useState(true);
             const [showWordList, setShowWordList] = useState(false);
             const [targetWord, setTargetWord] = useState(null);
             const [currentWordbank, setCurrentWordbank] = useState('default');
             const [availableFiles, setAvailableFiles] = useState([]);
-            const [selectedGitHubFile, setSelectedGitHubFile] = useState('');
-            const [loadingFromGitHub, setLoadingFromGitHub] = useState(false);
-            const [gitHubStatus, setGitHubStatus] = useState(''); // 状态信息
-
-            // 从URL参数加载词库
-            const loadFromUrlParam = useCallback(async () => {
-                const urlParams = new URLSearchParams(window.location.search);
-                const srcParam = urlParams.get('src');
-                
-                if (srcParam && GITHUB_CONFIG.owner && GITHUB_CONFIG.repo) {
-                    try {
-                        setLoadingFromGitHub(true);
-                        setGitHubStatus('正在从URL参数加载...');
-                        let fileResult;
-                        try {
-                            fileResult = await fetchWordFile(srcParam);
-                        } catch (e1) {
-                            console.warn('fetchWordFile failed for URL param, trying GitHub RAW explicitly:', e1.message);
-                            fileResult = await fetchFromGitHub(srcParam);
-                        }
-                        const parsedWords = parseGitHubFile(fileResult, srcParam);
-                        
-                        if (parsedWords.length > 0) {
-                            setWords(parsedWords);
-                            setCurrentWordbank('github');
-                            setSelectedGitHubFile(srcParam);
-                            setGitHubStatus(`已从URL加载 ${parsedWords.length} 个单词`);
-                            console.log(`Loaded ${parsedWords.length} words from URL parameter: ${srcParam}`);
-                        }
-                    } catch (error) {
-                        console.error('Failed to load from URL parameter:', error);
-                        setGitHubStatus(`URL加载失败: ${error.message}`);
-                        // 如果URL参数加载失败，尝试加载默认文件
-                        await loadDefaultGitHubWordbank();
-                    } finally {
-                        setLoadingFromGitHub(false);
-                    }
-                }
-            }, []);
-
-            // 加载默认GitHub词库
-            const loadDefaultGitHubWordbank = useCallback(async () => {
-                if (!GITHUB_CONFIG.owner || !GITHUB_CONFIG.repo) {
-                    console.log('GitHub config not available, using built-in default words');
-                    setGitHubStatus('GitHub配置不可用，使用内置词库');
-                    return;
-                }
-
-                try {
-                    setGitHubStatus('正在加载GitHub默认词库...');
-                    const defaultPath = `${GITHUB_CONFIG.dataFolder}/${GITHUB_CONFIG.defaultFile}`;
-                    const fileResult = await fetchWordFile(defaultPath);
-                    const parsedWords = parseGitHubFile(fileResult, GITHUB_CONFIG.defaultFile);
-                    
-                    if (parsedWords.length > 0) {
-                        setWords(parsedWords);
-                        setCurrentWordbank('github');
-                        setSelectedGitHubFile(defaultPath);
-                        setGitHubStatus(`已从GitHub加载 ${parsedWords.length} 个单词`);
-                        console.log(`Loaded ${parsedWords.length} words from default GitHub file`);
-                    } else {
-                        throw new Error('默认文件中没有找到有效单词');
-                    }
-                } catch (error) {
-                    console.warn('Failed to load default GitHub wordbank, using built-in defaults:', error);
-                    setWords(defaultWords);
-                    setCurrentWordbank('default');
-                    setGitHubStatus(`GitHub加载失败，使用内置词库: ${error.message}`);
-                }
-            }, []);
+            const [selectedFile, setSelectedFile] = useState('word3.md');
+            const [isLoading, setIsLoading] = useState(false);
+            const [loadError, setLoadError] = useState(null);
 
             // 初始化设置和数据
             useEffect(() => {
-                const init = async () => {
-                    // First check URL parameters
-                    const urlParams = new URLSearchParams(window.location.search);
-                    const srcParam = urlParams.get('src');
+                const initializeApp = async () => {
+                    const files = getAvailableWordFiles();
+                    setAvailableFiles(files);
                     
-                    if (srcParam) {
-                        await loadFromUrlParam();
-                    } else if (GITHUB_CONFIG.owner && GITHUB_CONFIG.repo) {
-                        // Try to load default from GitHub
-                        await loadDefaultGitHubWordbank();
-                    } else {
-                        // Use built-in default words
+                    // 尝试加载默认的word3.md文件
+                    try {
+                        setIsLoading(true);
+                        setLoadError(null);
+                        const loadedWords = await loadWordFileFromGitHub('word3.md');
+                        setWords(loadedWords);
+                        setCurrentWordbank('github');
+                    } catch (error) {
+                        console.warn('Failed to load word3.md, using default words:', error);
                         setWords(defaultWords);
                         setCurrentWordbank('default');
-                        setGitHubStatus('使用内置默认词库');
-                    }
-
-                    // Load available files list
-                    if (GITHUB_CONFIG.owner && GITHUB_CONFIG.repo) {
-                        try {
-                            setGitHubStatus(prev => prev + ' | 正在获取文件列表...');
-                            const files = await getAvailableFiles();
-                            setAvailableFiles(files);
-                            if (files.length > 0) {
-                                setGitHubStatus(prev => prev.replace(' | 正在获取文件列表...', ` | 找到 ${files.length} 个词库文件`));
-                            } else {
-                                setGitHubStatus(prev => prev.replace(' | 正在获取文件列表...', ' | 未找到额外词库文件'));
-                            }
-                        } catch (error) {
-                            console.warn('Failed to load available files list:', error);
-                            setGitHubStatus(prev => prev.replace(' | 正在获取文件列表...', ' | 文件列表获取失败'));
-                        }
+                        setLoadError('无法加载词库文件，使用默认词库');
+                    } finally {
+                        setIsLoading(false);
                     }
                 };
-
-                init();
-            }, [loadFromUrlParam, loadDefaultGitHubWordbank]);
-
-            // 处理GitHub文件选择
-            const handleGitHubFileChange = async (filePath) => {
-                if (!filePath) return;
                 
+                initializeApp();
+            }, []);
+
+            // 从GitHub加载选定的词库文件
+            const loadSelectedWordFile = async (filename) => {
                 try {
-                    setLoadingFromGitHub(true);
-                    setGitHubStatus('正在加载选定文件...');
-                    const fileResult = await fetchWordFile(filePath);
-                    const fileName = filePath.split('/').pop();
-                    const parsedWords = parseGitHubFile(fileResult, fileName);
-                    
-                    if (parsedWords.length > 0) {
-                        setWords(parsedWords);
-                        setCurrentWordbank('github');
-                        setSelectedGitHubFile(filePath);
-                        setGitHubStatus(`成功加载 ${parsedWords.length} 个单词`);
-                        alert(`成功加载 ${parsedWords.length} 个单词！`);
-                    } else {
-                        alert('文件中没有找到有效的单词数据！');
-                        setGitHubStatus('文件中没有找到有效单词');
-                    }
+                    setIsLoading(true);
+                    setLoadError(null);
+                    const loadedWords = await loadWordFileFromGitHub(filename);
+                    setWords(loadedWords);
+                    setCurrentWordbank('github');
+                    setSelectedFile(filename);
+                    alert(`成功加载 ${filename}，共 ${loadedWords.length} 个单词！`);
                 } catch (error) {
-                    console.error('Failed to load GitHub file:', error);
+                    setLoadError(`无法加载 ${filename}: ${error.message}`);
                     alert(`加载失败: ${error.message}`);
-                    setGitHubStatus(`加载失败: ${error.message}`);
-                } finally {
-                    setLoadingFromGitHub(false);
                 }
+                setIsLoading(false);
             };
 
             const handleImportFile = (event) => {
@@ -939,8 +624,6 @@
                         if (importedWords.length > 0) {
                             setWords(importedWords);
                             setCurrentWordbank('custom');
-                            setSelectedGitHubFile('');
-                            setGitHubStatus(`本地导入 ${importedWords.length} 个单词`);
                             alert(`成功导入 ${importedWords.length} 个单词！`);
                         } else {
                             alert('文件格式不正确或没有找到有效的单词数据！');
@@ -959,19 +642,13 @@
                 event.target.value = '';
             };
 
-            const switchWordbank = async (bankType) => {
+            const switchWordbank = (bankType) => {
                 if (bankType === 'default') {
                     setWords(defaultWords);
                     setCurrentWordbank('default');
-                    setSelectedGitHubFile('');
-                    setGitHubStatus('切换到内置词库');
-                } else if (bankType === 'github') {
-                    if (GITHUB_CONFIG.owner && GITHUB_CONFIG.repo) {
-                        await loadDefaultGitHubWordbank();
-                    } else {
-                        alert('GitHub配置不可用，请检查部署环境！');
-                        setGitHubStatus('GitHub配置不可用');
-                    }
+                } else if (bankType === 'github' && words.length > 0 && currentWordbank !== 'custom') {
+                    // 如果已经加载了GitHub词库，直接切换
+                    setCurrentWordbank('github');
                 } else if (bankType === 'custom') {
                     alert('请先导入自定义词库文件！');
                 }
@@ -979,11 +656,15 @@
 
             const clearCustomWordbank = () => {
                 if (window.confirm('确定要清空导入的词库吗？此操作不可恢复。')) {
-                    setWords(defaultWords);
-                    setCurrentWordbank('default');
-                    setSelectedGitHubFile('');
-                    setGitHubStatus('已重置为内置词库');
-                    alert('已清空导入词库并切回默认词库');
+                    if (currentWordbank === 'github' && words.length > 0) {
+                        // 如果有GitHub词库，切换回GitHub词库
+                        setCurrentWordbank('github');
+                    } else {
+                        // 否则切换到默认词库
+                        setWords(defaultWords);
+                        setCurrentWordbank('default');
+                    }
+                    alert('已清空导入词库');
                 }
             };
 
@@ -1005,6 +686,19 @@
 
             const toggleWordList = () => {
                 setShowWordList(!showWordList);
+            };
+
+            const getCurrentWordbankName = () => {
+                switch (currentWordbank) {
+                    case 'default':
+                        return '默认词库';
+                    case 'github':
+                        return `GitHub词库 (${selectedFile})`;
+                    case 'custom':
+                        return '导入词库';
+                    default:
+                        return '未知词库';
+                }
             };
 
             if (currentMode === 'flashcards') {
@@ -1059,20 +753,49 @@
                         <header className="text-center mb-10">
                             <h1 className="text-5xl font-bold text-gray-800 mb-4">单词记忆游戏</h1>
                             <p className="text-xl text-gray-600">提升英语词汇量的最佳工具</p>
+                            {isLoading && (
+                                <p className="text-lg text-blue-600 mt-4">正在加载词库...</p>
+                            )}
+                            {loadError && (
+                                <p className="text-lg text-red-600 mt-4">{loadError}</p>
+                            )}
                         </header>
 
-                        {/* GitHub状态显示 */}
-                        {GITHUB_CONFIG.owner && GITHUB_CONFIG.repo && (
-                            <div className="max-w-4xl mx-auto mb-6 p-4 bg-green-100 rounded-lg shadow-sm">
-                                <div className="flex items-center">
-                                    <span className="inline-block w-3 h-3 bg-green-500 rounded-full mr-3"></span>
-                                    <span className="text-sm font-medium text-green-800">
-                                        GitHub仓库: {GITHUB_CONFIG.owner}/{GITHUB_CONFIG.repo}
-                                    </span>
+                        {/* GitHub词库选择 */}
+                        {availableFiles.length > 0 && (
+                            <div className="max-w-4xl mx-auto mb-8 p-8 bg-white rounded-lg shadow-md">
+                                <h2 className="text-2xl font-bold mb-6">GitHub 词库选择</h2>
+                                <div className="space-y-4">
+                                    <div className="flex flex-wrap gap-3 items-center">
+                                        <label className="text-lg font-medium">选择词库文件：</label>
+                                        <select
+                                            value={selectedFile}
+                                            onChange={(e) => setSelectedFile(e.target.value)}
+                                            className="px-4 py-2 text-lg border border-gray-300 rounded"
+                                            disabled={isLoading}
+                                        >
+                                            {availableFiles.map((file) => (
+                                                <option key={file.filename} value={file.filename}>
+                                                    {file.displayName}
+                                                </option>
+                                            ))}
+                                        </select>
+                                        <button
+                                            onClick={() => loadSelectedWordFile(selectedFile)}
+                                            disabled={isLoading}
+                                            className={`px-6 py-2 text-lg rounded text-white ${
+                                                isLoading 
+                                                    ? 'bg-gray-400 cursor-not-allowed' 
+                                                    : 'bg-green-500 hover:bg-green-600'
+                                            }`}
+                                        >
+                                            {isLoading ? '加载中...' : '加载词库'}
+                                        </button>
+                                    </div>
+                                    <p className="text-base text-gray-600">
+                                        从 /data 目录自动加载 .md 词库文件，支持在线更新
+                                    </p>
                                 </div>
-                                {gitHubStatus && (
-                                    <p className="text-sm text-green-700 mt-2">{gitHubStatus}</p>
-                                )}
                             </div>
                         )}
 
@@ -1082,17 +805,9 @@
                             <div className="space-y-6">
                                 <div>
                                     <p className="mb-4 text-lg">当前词库: <span className="font-semibold">
-                                        {currentWordbank === 'default' ? '内置默认词库' : 
-                                         currentWordbank === 'github' ? 'GitHub词库' : '本地导入词库'}
+                                        {getCurrentWordbankName()}
                                     </span> ({words.length} 个单词)</p>
-                                    
-                                    {currentWordbank === 'github' && selectedGitHubFile && (
-                                        <p className="mb-4 text-sm text-gray-600">
-                                            文件: {selectedGitHubFile}
-                                        </p>
-                                    )}
-                                    
-                                    <div className="flex flex-wrap gap-3 mb-4">
+                                    <div className="flex flex-wrap gap-3">
                                         <button
                                             onClick={() => switchWordbank('default')}
                                             className={`px-6 py-3 text-lg rounded ${
@@ -1101,23 +816,18 @@
                                                     : 'bg-gray-200 hover:bg-gray-300'
                                             }`}
                                         >
-                                            切换到内置词库
+                                            切换到默认词库
                                         </button>
-                                        
-                                        {GITHUB_CONFIG.owner && GITHUB_CONFIG.repo && (
-                                            <button
-                                                onClick={() => switchWordbank('github')}
-                                                disabled={loadingFromGitHub}
-                                                className={`px-6 py-3 text-lg rounded ${
-                                                    currentWordbank === 'github'
-                                                        ? 'bg-blue-500 text-white'
-                                                        : 'bg-gray-200 hover:bg-gray-300'
-                                                } ${loadingFromGitHub ? 'opacity-50' : ''}`}
-                                            >
-                                                {loadingFromGitHub ? '加载中...' : '切换到GitHub词库'}
-                                            </button>
-                                        )}
-                                        
+                                        <button
+                                            onClick={() => switchWordbank('github')}
+                                            className={`px-6 py-3 text-lg rounded ${
+                                                currentWordbank === 'github'
+                                                    ? 'bg-blue-500 text-white'
+                                                    : 'bg-gray-200 hover:bg-gray-300'
+                                            }`}
+                                        >
+                                            切换到GitHub词库
+                                        </button>
                                         <button
                                             onClick={() => switchWordbank('custom')}
                                             className={`px-6 py-3 text-lg rounded ${
@@ -1126,44 +836,18 @@
                                                     : 'bg-gray-200 hover:bg-gray-300'
                                             }`}
                                         >
-                                            切换到本地导入
+                                            切换到导入词库
                                         </button>
-                                        
                                         <button
                                             onClick={clearCustomWordbank}
                                             className="px-6 py-3 text-lg bg-red-500 text-white rounded hover:bg-red-600"
                                         >
-                                            重置词库
+                                            清空导入词库
                                         </button>
                                     </div>
                                 </div>
-
-                                {/* GitHub文件选择器 */}
-                                {GITHUB_CONFIG.owner && GITHUB_CONFIG.repo && availableFiles.length > 0 && (
-                                    <div>
-                                        <label className="block mb-3 text-lg font-medium">从GitHub仓库加载词库:</label>
-                                        <select
-                                            value={selectedGitHubFile}
-                                            onChange={(e) => handleGitHubFileChange(e.target.value)}
-                                            disabled={loadingFromGitHub}
-                                            className="block w-full p-3 text-base border border-gray-300 rounded bg-white"
-                                        >
-                                            <option value="">-- 选择词库文件 --</option>
-                                            {availableFiles.map(file => (
-                                                <option key={file.path} value={file.path}>
-                                                    {file.displayName} ({file.name})
-                                                </option>
-                                            ))}
-                                        </select>
-                                        {loadingFromGitHub && (
-                                            <p className="mt-2 text-sm text-blue-600">正在从GitHub加载...</p>
-                                        )}
-                                    </div>
-                                )}
-
-                                {/* 本地文件导入 */}
                                 <div>
-                                    <label className="block mb-3 text-lg font-medium">导入本地词库文件 (.md / .xlsx):</label>
+                                    <label className="block mb-3 text-lg font-medium">手动导入词库文件 (.md / .xlsx):</label>
                                     <input
                                         type="file"
                                         accept=".md,.xlsx,.xls"
@@ -1202,6 +886,7 @@
                                     <button
                                         onClick={() => setCurrentMode('flashcards')}
                                         className="w-full px-6 py-4 bg-blue-500 text-white text-xl rounded-lg hover:bg-blue-600 font-semibold"
+                                        disabled={words.length === 0}
                                     >
                                         开始学习
                                     </button>
@@ -1217,12 +902,14 @@
                                         <button
                                             onClick={() => startQuiz('normal')}
                                             className="w-full px-6 py-3 text-lg bg-green-500 text-white rounded hover:bg-green-600"
+                                            disabled={words.length === 0}
                                         >
                                             普通模式 (3选1)
                                         </button>
                                         <button
                                             onClick={() => startQuiz('hard')}
                                             className="w-full px-6 py-3 text-lg bg-red-500 text-white rounded hover:bg-red-600"
+                                            disabled={words.length === 0}
                                         >
                                             困难模式 (5选1)
                                         </button>
@@ -1235,19 +922,16 @@
                         <div className="max-w-4xl mx-auto mt-10 p-8 bg-white rounded-lg shadow-md">
                             <h2 className="text-2xl font-bold mb-6">使用说明</h2>
                             <div className="text-base text-gray-600 space-y-3">
+                                <p><strong>GitHub词库：</strong>页面自动从 /data 目录加载 .md 词库文件，支持在线更新和文件选择</p>
                                 <p><strong>卡片模式：</strong>点击卡片翻转查看释义，背面自动发音，可立即测试单个单词，优化布局一次性显示全部内容</p>
                                 <p><strong>普通模式：</strong>3选1，答对+1分，答错不扣分</p>
                                 <p><strong>困难模式：</strong>5选1，随机中英文题干，同词性干扰项，答对+2分，答错-2分</p>
                                 <p><strong>字体优化：</strong>所有文字都已优化为更大的字体，支持响应式设计，在不同设备上都有良好的可读性</p>
-                                <p><strong>GitHub集成：</strong>支持从GitHub仓库自动加载词库文件，支持URL参数直接加载指定文件</p>
                                 <p><strong>文件格式：</strong></p>
                                 <p>• Markdown: ## word: 单词名 → pos: 词性 → cn: 中文 → defs: 搭配 → ex: 例句</p>
                                 <p>• Excel: 包含word、pos、cn、defs、ex列，多个例句/搭配用分号分隔</p>
                                 <p>• 例句支持英中对照格式：英文|中文；英文|中文；英文|中文</p>
-                                <p><strong>URL参数：</strong>可使用 ?src=data/filename.md 直接加载指定词库文件</p>
-                                {GITHUB_CONFIG.owner && GITHUB_CONFIG.repo && (
-                                    <p><strong>当前仓库：</strong> {GITHUB_CONFIG.owner}/{GITHUB_CONFIG.repo}</p>
-                                )}
+                                <p><strong>部署说明：</strong>将 .md 词库文件放在项目根目录的 /data 文件夹中，GitHub Pages 会自动读取</p>
                             </div>
                         </div>
                     </div>
